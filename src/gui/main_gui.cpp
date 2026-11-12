@@ -66,6 +66,13 @@ static int subtreeHeight(TreeNode* n) {
     return 1 + std::max(subtreeHeight(n->left), subtreeHeight(n->right));
 }
 
+static int depthOfNode(TreeNode* node, int id, int depth = 0) {
+    if (!node) return -1;
+    if (node->id == id) return depth;
+    int leftDepth = depthOfNode(node->left, id, depth + 1);
+    return leftDepth >= 0 ? leftDepth : depthOfNode(node->right, id, depth + 1);
+}
+
 static void collectUnbalancedIds(TreeNode* n, std::vector<int>& out) {
     if (!n) return;
     if (std::abs(subtreeHeight(n->left) - subtreeHeight(n->right)) > 1) out.push_back(n->id);
@@ -161,6 +168,26 @@ static std::string serializeTree(TreeNode* root) {
     return oss.str();
 }
 
+static TreeNode* deserializeNode(std::istringstream& input, TreeNode* parent, int& nextId) {
+    std::string token;
+    if (!(input >> token) || token == "#") return nullptr;
+    int key = std::stoi(token);
+    BSTNode* node = new BSTNode(key, key);
+    node->id = nextId++;
+    node->parent = parent;
+    node->left = deserializeNode(input, node, nextId);
+    node->right = deserializeNode(input, node, nextId);
+    return node;
+}
+
+static TreeNode* deserializeTree(const std::string& data, int& nodeCount) {
+    std::istringstream input(data);
+    int nextId = 1;
+    TreeNode* root = deserializeNode(input, nullptr, nextId);
+    nodeCount = nextId - 1;
+    return root;
+}
+
 // Keys of a snapshot in preorder. Re-inserting them in this order
 // rebuilds exactly the same BST shape.
 static std::vector<int> snapshotKeys(const std::string& data) {
@@ -183,6 +210,21 @@ int main() {
 
     int actIdx = 0;
     int levelIdx = 0;
+    const std::string activeStatePath = std::string(GetApplicationDirectory()) + "data/current_state.txt";
+    {
+        std::ifstream stateFile(activeStatePath);
+        std::string savedLevelId;
+        if (stateFile >> savedLevelId) {
+            for (int a = 0; a < (int)loader.acts.size(); ++a) {
+                for (int l = 0; l < (int)loader.acts[a].levels.size(); ++l) {
+                    if (loader.acts[a].levels[l].id == savedLevelId) {
+                        actIdx = a;
+                        levelIdx = l;
+                    }
+                }
+            }
+        }
+    }
 
     BST tree;
     std::vector<int> currentLevelKeys;
@@ -220,7 +262,14 @@ int main() {
     bool heapTaskComplete = false;
     std::unordered_set<std::string> completedLevels;
     std::unordered_map<std::string, int> bestScores;
+    std::unordered_map<std::string, int> bestStars;
     int mistakesThisLevel = 0;
+    int alarmSteps = 0;
+    int alarmCapacity = 12;
+    int scorePenalties = 0;
+    int starsEarned = 0;
+    int starCap = 3;
+    bool alarmFailed = false;
     std::string lastCountedError;
     const std::string progressPath = std::string(GetApplicationDirectory()) + "data/progress.txt";
     std::unordered_set<std::string> validLevelIds;
@@ -238,6 +287,8 @@ int main() {
                 entry >> savedScore;
                 completedLevels.insert(savedId);
                 bestScores[savedId] = savedScore;
+                int savedStars = 0;
+                if (entry >> savedStars) bestStars[savedId] = savedStars;
             }
         }
     }
@@ -245,7 +296,8 @@ int main() {
         std::ofstream progressFile(progressPath, std::ios::trunc);
         if (!progressFile.is_open()) return;
         for (const std::string& id : completedLevels)
-            progressFile << id << ' ' << (bestScores.count(id) ? bestScores[id] : 1000) << '\n';
+            progressFile << id << ' ' << (bestScores.count(id) ? bestScores[id] : 0) << ' '
+                         << (bestStars.count(id) ? bestStars[id] : 0) << '\n';
     };
     std::vector<int> searchPath;
     std::vector<int> searchVisited;
@@ -333,6 +385,21 @@ int main() {
         if (id[0] == '4') return heapTaskComplete;
         return false;
     };
+    auto optimalSteps = [&]() {
+        const std::string& id = loader.acts[actIdx].levels[levelIdx].id;
+        if (id == "1.1") return (int)patrolOrder.size();
+        if (id == "1.2" || id == "2.2" || id == "2.3" || id == "3.2" || id == "3.4" || id == "3.5" || id == "4.1" || id == "4.2") return 1;
+        if (id == "1.3") return 2;
+        if (id == "1.4") return 3;
+        if (id == "1.5") return std::max(1, (int)mirrorTargets.size());
+        if (id == "2.1" || id == "2.5") return std::max(1, (int)searchPath.size());
+        if (id == "2.4") return std::max(1, (int)rangeExpected.size());
+        if (id == "3.1") return std::max(1, (int)unbalancedTargets.size());
+        if (id == "3.3") return 2;
+        if (id == "4.3") return (int)currentLevelKeys.size();
+        if (id == "4.4" || id == "4.5") return std::max(1, (int)currentLevelKeys.size() - 1);
+        return std::max(1, (int)currentLevelKeys.size());
+    };
     auto isGuidedLevel = [&]() {
         return isPatrolLevel() || isSearchLevel() || isLcaLevel() || isMirrorLevel() ||
                isRangeLevel() || isDegenerationLevel() || isBalanceLevel() || isOrderStatisticLevel();
@@ -362,6 +429,12 @@ int main() {
     auto resetToLevel = [&]() {
         if (!levelsLoaded || loader.acts.empty()) return;
         mistakesThisLevel = 0;
+        alarmSteps = 0;
+        alarmCapacity = 12;
+        scorePenalties = 0;
+        starsEarned = 0;
+        starCap = 3;
+        alarmFailed = false;
         lastCountedError.clear();
         const auto& lvl = loader.acts[actIdx].levels[levelIdx];
         int itemCount = lvl.nodes > 0 ? lvl.nodes : (lvl.elements > 0 ? lvl.elements : 7);
@@ -495,6 +568,10 @@ int main() {
     const int canvasW  = WIN_W - 2 * canvasX;
     const int canvasH  = WIN_H - canvasY - 20;
     Rectangle canvas = { (float)canvasX, (float)canvasY, (float)canvasW, (float)canvasH };
+    float cameraZoom = 1.0f;
+    Vector2 cameraPan = {0, 0};
+    Vector2 previousMouse = {0, 0};
+    bool panning = false;
 
     const Color OK_C  = Color{0, 120, 60, 255};
     const Color ERR_C = Color{170, 30, 30, 255};
@@ -503,6 +580,18 @@ int main() {
     int active = 0, iL = 0, dL = 0;
     std::string stat = "Ready.";
     Color statC = DARKGRAY;
+
+    auto chargeAlarm = [&](int amount = 1) {
+        if (alarmFailed || isCurrentLevelComplete()) return;
+        alarmSteps += amount;
+        alarmCapacity = std::max(1, (3 * optimalSteps() + 1) / 2 + 2);
+        if (alarmSteps >= alarmCapacity) {
+            alarmSteps = alarmCapacity;
+            alarmFailed = true;
+            stat = "Alarm full. Reset this level to try again.";
+            statC = ERR_C;
+        }
+    };
 
     auto relayout = [&]() {
         int id = 1; renumberNodes(tree.getRoot(), id);
@@ -544,6 +633,44 @@ int main() {
         tree.root = buildHeapView(heapState.heap, 0, nullptr, nextId);
         tree.nodeCount = nextId - 1;
         relayout();
+    };
+
+    {
+        std::ifstream stateFile(activeStatePath);
+        std::string savedId, kind;
+        if (stateFile >> savedId >> kind && savedId == loader.acts[actIdx].levels[levelIdx].id) {
+            if (kind == "T") {
+                std::string snapshot;
+                std::getline(stateFile, snapshot);
+                std::getline(stateFile, snapshot);
+                clearNodes(tree.getRoot());
+                tree.root = deserializeTree(snapshot, tree.nodeCount);
+                relayout();
+            } else if (kind == "H") {
+                int count = 0, extractedCount = 0;
+                stateFile >> activeHeapSize >> count >> extractedCount;
+                heapState.heap.resize(std::max(0, count));
+                for (int& value : heapState.heap) stateFile >> value;
+                extractedValues.resize(std::max(0, extractedCount));
+                for (int& value : extractedValues) stateFile >> value;
+                refreshHeapView();
+            }
+        }
+    }
+
+    auto saveActiveState = [&]() {
+        std::ofstream stateFile(activeStatePath, std::ios::trunc);
+        if (!stateFile.is_open()) return;
+        stateFile << loader.acts[actIdx].levels[levelIdx].id << '\n';
+        if (isHeapLevel()) {
+            stateFile << "H " << activeHeapSize << ' ' << heapState.heap.size() << ' '
+                      << extractedValues.size();
+            for (int value : heapState.heap) stateFile << ' ' << value;
+            for (int value : extractedValues) stateFile << ' ' << value;
+            stateFile << '\n';
+        } else {
+            stateFile << "T\n" << serializeTree(tree.getRoot()) << '\n';
+        }
     };
 
     // Replace the whole tree with the given keys (uses only insert/remove)
@@ -650,6 +777,11 @@ int main() {
     auto doReset = [&]() {
         mistakesThisLevel = 0;
         lastCountedError.clear();
+        alarmSteps = 0;
+        scorePenalties = 0;
+        starsEarned = 0;
+        starCap = 3;
+        alarmFailed = false;
         if (isHeapLevel()) {
             resetToLevel();
             relayout();
@@ -741,6 +873,9 @@ int main() {
     };
 
     auto doOp = [&](bool ins) {
+        if (alarmFailed) return;
+        chargeAlarm();
+        if (alarmFailed) return;
         if (ins && iL > 0) {
             int v = std::stoi(insB);
             if (isInsertLevel() && insertCompleted) {
@@ -790,6 +925,9 @@ int main() {
     };
 
     auto doSingleRotation = [&]() {
+        if (alarmFailed) return;
+        chargeAlarm();
+        if (alarmFailed) return;
         if (singleRotationComplete) {
             stat = "Rotation complete. Reset to try again."; statC = OK_C;
             return;
@@ -815,6 +953,9 @@ int main() {
     };
 
     auto doDoubleRotation = [&]() {
+        if (alarmFailed) return;
+        chargeAlarm();
+        if (alarmFailed) return;
         if (doubleRotationStep >= 2) {
             stat = "Double rotation complete. Reset to try again."; statC = OK_C;
             return;
@@ -846,9 +987,13 @@ int main() {
     };
 
     auto predictInsertion = [&](const std::string& choice) {
+        if (alarmFailed) return;
+        chargeAlarm(choice == "LL" ? 1 : 2);
+        if (alarmFailed) return;
         if (insertPredictComplete) {
             stat = "Insertion complete. Reset to try again."; statC = OK_C;
         } else if (choice != "LL") {
+            scorePenalties += 50;
             stat = "Not this case. Follow the insertion path from room 30."; statC = ERR_C;
         } else {
             undoStack.push_back(serializeTree(tree.getRoot()));
@@ -865,6 +1010,9 @@ int main() {
     };
 
     auto doHeapAction = [&]() {
+        if (alarmFailed) return;
+        chargeAlarm();
+        if (alarmFailed) return;
         const std::string& levelId = loader.acts[actIdx].levels[levelIdx].id;
         if (levelId == "4.1" || levelId == "4.2") {
             std::vector<int> input = heapState.heap;
@@ -913,6 +1061,9 @@ int main() {
     };
 
     auto checkReconstructionRoot = [&]() {
+        if (alarmFailed) return;
+        chargeAlarm();
+        if (alarmFailed) return;
         if (iL == 0 || preorderClue.empty()) {
             stat = "Enter a root value first."; statC = ERR_C;
             return;
@@ -935,6 +1086,9 @@ int main() {
     };
 
     auto checkHeightDiameterAnswer = [&]() {
+        if (alarmFailed) return;
+        chargeAlarm();
+        if (alarmFailed) return;
         if (iL == 0) {
             stat = "Enter a number first."; statC = ERR_C;
             return;
@@ -971,8 +1125,37 @@ int main() {
 
     relayout();
 
+    double lastStateSave = GetTime();
     while (!WindowShouldClose()) {
+        alarmCapacity = std::max(1, (3 * optimalSteps() + 1) / 2 + 2);
         Vector2 m = GetMousePosition();
+        auto toScreen = [&](const NodePosition& p) {
+            return Vector2{canvas.x + canvas.width / 2.0f + (p.x - (canvas.x + canvas.width / 2.0f)) * cameraZoom + cameraPan.x,
+                           canvas.y + canvas.height / 2.0f + (p.y - (canvas.y + canvas.height / 2.0f)) * cameraZoom + cameraPan.y};
+        };
+        bool inCanvas = CheckCollisionPointRec(m, canvas);
+        float wheelMove = GetMouseWheelMove();
+        if (inCanvas && wheelMove != 0.0f)
+            cameraZoom = std::max(0.5f, std::min(2.5f, cameraZoom + wheelMove * 0.1f));
+        TreeNode* hoveredNode = nullptr;
+        if (inCanvas) {
+            for (const auto& entry : layout.positions) {
+                Vector2 p = toScreen(entry.second);
+                float radius = entry.second.radius * cameraZoom;
+                float dx = m.x - p.x, dy = m.y - p.y;
+                if (dx * dx + dy * dy <= radius * radius) {
+                    hoveredNode = findNodeById(tree.getRoot(), entry.first);
+                    break;
+                }
+            }
+        }
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && inCanvas && !hoveredNode) panning = true;
+        if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) panning = false;
+        if (panning && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+            cameraPan.x += m.x - previousMouse.x;
+            cameraPan.y += m.y - previousMouse.y;
+        }
+        previousMouse = m;
         auto drawBtn = [&](Rectangle r, const std::string& t) {
             bool h = CheckCollisionPointRec(m, r);
             bool p = h && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
@@ -1000,12 +1183,16 @@ int main() {
         Rectangle measureAnswerRect = { 100, (float)row2Y, 60, 30 };
 
         // ---- Input handling ----
-        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && isGuidedLevel() &&
+        if (!alarmFailed && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && isGuidedLevel() &&
             CheckCollisionPointRec(m, { (float)canvasX, (float)canvasY, (float)canvasW, (float)canvasH })) {
             for (const auto& entry : layout.positions) {
                 const NodePosition& pos = entry.second;
-                float dx = m.x - pos.x, dy = m.y - pos.y;
-                if (dx * dx + dy * dy <= pos.radius * pos.radius) {
+                Vector2 screenPos = toScreen(pos);
+                float hitRadius = pos.radius * cameraZoom;
+                float dx = m.x - screenPos.x, dy = m.y - screenPos.y;
+                if (dx * dx + dy * dy <= hitRadius * hitRadius) {
+                    chargeAlarm();
+                    if (alarmFailed) break;
                     if (isOrderStatisticLevel()) {
                         if (entry.first == orderStatisticTargetId) {
                             orderStatisticComplete = true;
@@ -1129,22 +1316,43 @@ int main() {
             if (active == 0 && iL > 0) insB[--iL] = '\0';
             else if (active == 1 && dL > 0) delB[--dL] = '\0';
         }
-        if (IsKeyPressed(KEY_ENTER)) {
+        if (IsKeyPressed(KEY_ENTER) && !alarmFailed) {
             if (isReconstructionLevel()) checkReconstructionRoot();
             else if (isHeightDiameterLevel()) checkHeightDiameterAnswer();
             else if (isHeapLevel()) doHeapAction();
             else if (!isGuidedLevel()) doOp(active == 0);
         }
+        if (IsKeyPressed(KEY_H) && !alarmFailed && !isCurrentLevelComplete()) {
+            starCap = std::min(starCap, 2);
+            const std::string& id = loader.acts[actIdx].levels[levelIdx].id;
+            std::string hint = id == "1.1" ? "Hint: preorder visits root, then left subtree, then right subtree."
+                : (id == "1.2" ? "Hint: the first preorder value is the root."
+                : (id == "2.1" || id == "2.5" ? "Hint: compare with the current key and follow the BST ordering."
+                : (id == "3.2" ? "Hint: LL uses a right rotation; RR uses a left rotation."
+                : (id == "3.3" ? "Hint: the inner child rotates first, then the unbalanced root."
+                : (id[0] == '4' ? "Hint: keep the largest value at the heap root." : "Hint: follow the level objective one step at a time.")))));
+            stat = hint;
+            statC = OK_C;
+        }
         if (IsKeyPressed(KEY_Z)) doUndo();
         if (isCurrentLevelComplete()) {
             const std::string& completedId = loader.acts[actIdx].levels[levelIdx].id;
-            int score = std::max(0, 1000 - mistakesThisLevel * 50);
+            int score = std::max(0, 1000 - 10 * alarmSteps - scorePenalties);
+            starsEarned = std::min(starCap, alarmSteps <= optimalSteps() && scorePenalties == 0 ? 3
+                        : alarmSteps <= (5 * optimalSteps()) / 4 && scorePenalties <= 1 ? 2 : 1);
             bool newCompletion = completedLevels.insert(completedId).second;
             auto best = bestScores.find(completedId);
-            if (newCompletion || best == bestScores.end() || score > best->second) {
-                bestScores[completedId] = score;
+            bool scoreImproved = newCompletion || best == bestScores.end() || score > best->second;
+            bool starsImproved = starsEarned > bestStars[completedId];
+            if (scoreImproved || starsImproved) {
+                if (scoreImproved) bestScores[completedId] = score;
+                if (starsImproved) bestStars[completedId] = starsEarned;
                 saveCampaignProgress();
             }
+        }
+        if (GetTime() - lastStateSave >= 1.0) {
+            saveActiveState();
+            lastStateSave = GetTime();
         }
 
         BeginDrawing();
@@ -1379,11 +1587,14 @@ int main() {
                 std::string currentLevelId = loader.acts[actIdx].levels[levelIdx].id;
                 auto currentBest = bestScores.find(currentLevelId);
                 int shownScore = currentBest == bestScores.end()
-                                     ? std::max(0, 1000 - mistakesThisLevel * 50)
+                                     ? std::max(0, 1000 - 10 * alarmSteps - scorePenalties)
                                      : currentBest->second;
-                DrawText(("Score: " + std::to_string(shownScore) +
-                          "  Mistakes: " + std::to_string(mistakesThisLevel)).c_str(),
-                         WIN_W - 260, row2Y + 7, 16, DARKGRAY);
+                int shownStars = isCurrentLevelComplete()
+                    ? starsEarned
+                    : (bestStars.count(currentLevelId) ? bestStars[currentLevelId] : 0);
+                DrawText(("Alarm: " + std::to_string(alarmSteps) + "/" + std::to_string(alarmCapacity) +
+                          "  Score: " + std::to_string(shownScore) + "  Stars: " +
+                          std::to_string(shownStars) + "/3").c_str(), WIN_W - 400, row2Y + 7, 16, DARKGRAY);
             }
 
             // Row 3: instructions, Row 4: status
@@ -1404,6 +1615,7 @@ int main() {
             else if (isReconstructionLevel()) instructions = "Use preorder and inorder to identify the root, then check your answer.";
             else if (isInsertLevel()) instructions = "Type the target key and press [ENTER] or click Insert. [Z] undoes.";
             else if (isDeleteLevel()) instructions = "Delete the node with two children to watch the inorder successor take its place.";
+            instructions += " [H] Hint. Wheel zooms; drag empty canvas to pan.";
             DrawText(instructions.c_str(), 30, instrY, 16, GRAY);
             DrawText(stat.c_str(), 30, statusY, 18, statC);
 
@@ -1449,15 +1661,52 @@ int main() {
                     if (pivot) highlights[pivot->id] = GOLD;
                 }
                 if (!isReconstructionLevel() || reconstructionComplete) {
-                    renderer.drawTree(tree.getRoot(), layout, highlights);
+                    renderer.drawTree(tree.getRoot(), layout, highlights, canvas, cameraZoom, cameraPan);
                 } else {
                     DrawText("Reconstruct the root from the two traversal clues above.",
                              canvasX + 35, canvasY + 30, 20, DARKGRAY);
                 }
             EndScissorMode();
+            if (isCurrentLevelComplete() || alarmFailed) {
+                int panelW = 390, panelH = 170;
+                int panelX = canvasX + (canvasW - panelW) / 2;
+                int panelY = canvasY + (canvasH - panelH) / 2;
+                DrawRectangle(panelX, panelY, panelW, panelH, Color{20, 35, 55, 245});
+                DrawRectangleLines(panelX, panelY, panelW, panelH, GOLD);
+                const char* resultTitle = alarmFailed ? "ALARM TRIGGERED" : "LEVEL COMPLETE";
+                DrawText(resultTitle, panelX + 25, panelY + 20, 26, alarmFailed ? RED : GREEN);
+                if (alarmFailed) {
+                    DrawText("Reset the level to try again.", panelX + 25, panelY + 65, 18, RAYWHITE);
+                } else {
+                    std::string stars = "Stars: " + std::string(starsEarned, '*') +
+                                        std::string(3 - starsEarned, '-');
+                    DrawText(stars.c_str(), panelX + 25, panelY + 61, 22, GOLD);
+                    DrawText(("Alarm steps: " + std::to_string(alarmSteps) +
+                              " / " + std::to_string(alarmCapacity)).c_str(),
+                             panelX + 25, panelY + 92, 17, RAYWHITE);
+                    DrawText(("Score: " + std::to_string(std::max(0, 1000 - 10 * alarmSteps - scorePenalties)) +
+                              "    Optimal: " + std::to_string(optimalSteps())).c_str(),
+                             panelX + 25, panelY + 119, 17, RAYWHITE);
+                }
+                DrawText("Use Reset to retry or Next Lvl to continue.", panelX + 25, panelY + 145, 15, LIGHTGRAY);
+            }
+            if (hoveredNode) {
+                int nodeHeight = subtreeHeight(hoveredNode);
+                int balance = subtreeHeight(hoveredNode->left) - subtreeHeight(hoveredNode->right);
+                std::string tip = "Key " + std::to_string(hoveredNode->value) +
+                    " | depth " + std::to_string(depthOfNode(tree.getRoot(), hoveredNode->id)) +
+                    " | height " + std::to_string(nodeHeight) +
+                    " | balance " + std::to_string(balance);
+                int tipW = MeasureText(tip.c_str(), 15) + 14;
+                int tipX = std::min((int)m.x + 14, WIN_W - tipW - 8);
+                int tipY = std::min((int)m.y + 14, WIN_H - 34);
+                DrawRectangle(tipX, tipY, tipW, 26, Color{30, 30, 30, 235});
+                DrawText(tip.c_str(), tipX + 7, tipY + 5, 15, RAYWHITE);
+            }
             DrawRectangleLines(canvasX, canvasY, canvasW, canvasH, LIGHTGRAY);
         EndDrawing();
     }
+    saveActiveState();
     CloseWindow();
     return 0;
 }

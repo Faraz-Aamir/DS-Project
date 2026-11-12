@@ -57,7 +57,7 @@ For 10,000 sorted inserts, the BST height was 9,999 while the AVL height was 13.
 
 ## Implementation boundaries to explain honestly
 
-The current executable contains the campaign level browser and its tree/heap challenges. The original brief's endless mode, sandbox, campaign map, general event-playback animation, and dedicated result screens are not implemented. The current GUI uses snapshot-based undo where supported. Broad 200-node pan/zoom performance and every fail-and-retry path have not been measured systematically.
+The current build includes the campaign level browser and tree/heap challenges, alarm capacity, the spec score formula, star awards, hint star cap, a result overlay, local active tree/heap save/load, zoom/pan, and room tooltips. Endless mode, Sandbox, Campaign Map, and a general event animation/replay controller are not implemented. Undo uses tree snapshots where supported. Large-tree pan/zoom performance and every fail-and-retry path have not been measured systematically.
 
 ## Team preparation
 
