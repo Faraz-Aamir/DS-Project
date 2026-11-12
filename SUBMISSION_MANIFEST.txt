@@ -1,0 +1,4 @@
+Vault Heist submission review archive
+Contains source, runnable demo, benchmark executable and raw data, tests, report, level guide, screenshots, and viva preparation.
+Campaign progress is intentionally omitted so the packaged demo starts with a fresh campaign.
+Rename this archive using the assignment pattern after adding both roll numbers and the section.

@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="500" viewBox="0 0 1080 500" role="img" aria-labelledby="title desc">
+  <title id="title">Sorting algorithm comparison at 10,000 elements</title>
+  <desc id="desc">Grouped horizontal bars show five-run median time for Heap Sort, Merge Sort, and three-way Quick Sort on four input patterns.</desc>
+  <rect width="1080" height="500" fill="#ffffff"/>
+  <style>
+    text{font-family:Segoe UI,Arial,sans-serif;fill:#263238}.title{font-size:24px;font-weight:700}.sub{font-size:14px;fill:#546e7a}.label{font-size:15px}.value{font-size:13px;font-weight:600}.axis{font-size:12px;fill:#546e7a}.grid{stroke:#dce3e8;stroke-width:1}.heap{fill:#2878b5}.merge{fill:#2a9d68}.quick{fill:#e07a24}
+  </style>
+  <text x="45" y="42" class="title">Sorting algorithms at 10,000 elements</text>
+  <text x="45" y="66" class="sub">Five-run median time in milliseconds · same input pattern per group</text>
+  <g>
+    <line x1="270" y1="94" x2="270" y2="438" class="grid"/><text x="266" y="462" class="axis">0</text>
+    <line x1="441" y1="94" x2="441" y2="438" class="grid"/><text x="433" y="462" class="axis">1</text>
+    <line x1="613" y1="94" x2="613" y2="438" class="grid"/><text x="605" y="462" class="axis">2</text>
+    <line x1="784" y1="94" x2="784" y2="438" class="grid"/><text x="776" y="462" class="axis">3</text>
+    <line x1="870" y1="94" x2="870" y2="438" class="grid"/><text x="855" y="462" class="axis">3.5</text>
+    <text x="55" y="132" class="label">Random</text>
+    <rect x="270" y="110" width="218" height="17" rx="3" class="heap"/><text x="497" y="124" class="value">1.271</text>
+    <rect x="270" y="131" width="475" height="17" rx="3" class="merge"/><text x="754" y="145" class="value">2.772</text>
+    <rect x="270" y="152" width="389" height="17" rx="3" class="quick"/><text x="668" y="166" class="value">2.270</text>
+    <text x="55" y="212" class="label">Sorted</text>
+    <rect x="270" y="190" width="162" height="17" rx="3" class="heap"/><text x="441" y="204" class="value">0.945</text>
+    <rect x="270" y="211" width="139" height="17" rx="3" class="merge"/><text x="418" y="225" class="value">0.808</text>
+    <rect x="270" y="232" width="506" height="17" rx="3" class="quick"/><text x="785" y="246" class="value">2.955</text>
+    <text x="55" y="292" class="label">Reverse</text>
+    <rect x="270" y="270" width="135" height="17" rx="3" class="heap"/><text x="414" y="284" class="value">0.785</text>
+    <rect x="270" y="291" width="94" height="17" rx="3" class="merge"/><text x="373" y="305" class="value">0.549</text>
+    <rect x="270" y="312" width="259" height="17" rx="3" class="quick"/><text x="538" y="326" class="value">1.514</text>
+    <text x="55" y="372" class="label">Duplicates</text>
+    <rect x="270" y="350" width="177" height="17" rx="3" class="heap"/><text x="456" y="364" class="value">1.029</text>
+    <rect x="270" y="371" width="155" height="17" rx="3" class="merge"/><text x="434" y="385" class="value">0.901</text>
+    <rect x="270" y="392" width="37" height="17" rx="3" class="quick"/><text x="316" y="406" class="value">0.217</text>
+  </g>
+  <rect x="430" y="475" width="13" height="13" class="heap"/><text x="449" y="487" class="axis">Heap Sort</text>
+  <rect x="550" y="475" width="13" height="13" class="merge"/><text x="569" y="487" class="axis">Merge Sort</text>
+  <rect x="685" y="475" width="13" height="13" class="quick"/><text x="704" y="487" class="axis">Three-way Quick Sort</text>
+</svg>

@@ -1,0 +1,52 @@
+{
+  "acts": [
+    {
+      "act": 1,
+      "title": "The Blueprint Wing",
+      "description": "General Binary Tree fundamentals, traversals, reconstruction, height, diameter, and LCA.",
+      "levels": [
+        { "id": "1.1", "name": "Patrol Predictor", "type": "traversal", "nodes": 7, "seed": 101 },
+        { "id": "1.2", "name": "Blueprint Decoder", "type": "reconstruction", "nodes": 6, "seed": 102 },
+        { "id": "1.3", "name": "Alarm Ascent", "type": "height_diameter", "nodes": 10, "seed": 103 },
+        { "id": "1.4", "name": "Escape Meeting", "type": "lca", "nodes": 9, "seed": 104 },
+        { "id": "1.5", "name": "Vault Mirror", "type": "mirror", "nodes": 7, "seed": 105 }
+      ]
+    },
+    {
+      "act": 2,
+      "title": "The Sorted Wing",
+      "description": "Binary Search Trees (BST), search, insert, delete, range queries, and degeneration.",
+      "levels": [
+        { "id": "2.1", "name": "Search Heist", "type": "bst_search", "nodes": 10, "seed": 201 },
+        { "id": "2.2", "name": "Stash Loot", "type": "bst_insert", "nodes": 8, "seed": 202 },
+        { "id": "2.3", "name": "Collapse and Delete", "type": "bst_delete", "nodes": 10, "seed": 203 },
+        { "id": "2.4", "name": "Range Raid", "type": "bst_range", "nodes": 15, "seed": 204 },
+        { "id": "2.5", "name": "Boss: Lazy Architect", "type": "degeneration", "nodes": 12, "seed": 205 }
+      ]
+    },
+    {
+      "act": 3,
+      "title": "The Architect's Wing",
+      "description": "AVL Trees, balance factors, rotations (LL, RR, LR, RL), order statistics, and survival mode.",
+      "levels": [
+        { "id": "3.1", "name": "Read the Badges", "type": "avl_balance", "nodes": 11, "seed": 301 },
+        { "id": "3.2", "name": "Manual Repair (Single)", "type": "avl_single_rotate", "nodes": 7, "seed": 302 },
+        { "id": "3.3", "name": "Manual Repair (Double)", "type": "avl_double_rotate", "nodes": 7, "seed": 303 },
+        { "id": "3.4", "name": "Auto Mode Prediction", "type": "avl_insert_predict", "nodes": 10, "seed": 304 },
+        { "id": "3.5", "name": "Boss: Order-Statistic Heist", "type": "avl_kth_rank", "nodes": 15, "seed": 305 }
+      ]
+    },
+    {
+      "act": 4,
+      "title": "The Heap Fortress",
+      "description": "Max Heap, bottom-up heap construction, heapify, extract max, and Heap Sort.",
+      "levels": [
+        { "id": "4.1", "name": "Activate the Vault", "type": "heap_build", "elements": 10, "seed": 401 },
+        { "id": "4.2", "name": "Repair Security Locks", "type": "heapify", "elements": 12, "seed": 402 },
+        { "id": "4.3", "name": "Extract Greatest Treasure", "type": "extract_max", "elements": 10, "seed": 403 },
+        { "id": "4.4", "name": "Race Against Guards", "type": "heap_sort_steps", "elements": 15, "seed": 404 },
+        { "id": "4.5", "name": "Final Vault Boss", "type": "heap_sort_boss", "elements": 20, "seed": 405 }
+      ]
+    }
+  ]
+}
