@@ -6,7 +6,7 @@ Vault Heist is a small data-structures game. Each vault room is a tree node, and
 
 1. Open the project folder.
 2. Build the demo using the command below.
-3. Use **Next Lvl** and **Next Act** to move through the campaign.
+3. Start at the main menu. Choose **Campaign** to open the four-act map, or try Endless and Sandbox.
 
 ## Build
 
@@ -18,7 +18,15 @@ Build the GUI demo:
 C:\raylib\w64devkit\bin\g++.exe -std=c++17 -O2 -Wall -Wextra -IC:\raylib\raylib\src -o vault_gui_demo.exe src\gui\main_gui.cpp src\models\BinaryTree.cpp -LC:\raylib\raylib\src -lraylib -lopengl32 -lgdi32 -lwinmm
 ```
 
-Run it from the project root. It loads `data\levels.json` beside the executable.
+Run the built demo from the project root:
+
+```powershell
+.\vault_gui_demo.exe
+```
+
+It loads `data\levels.json` beside the executable.
+
+The shared `Validator` checks tree links/counts, BST ordering, AVL heights/sizes/balance, and heap order. The unit tests include `lcaBST` and valid/invalid invariant cases. The benchmark accepts `--disable-events` to suppress returned model event records during measurements.
 
 Build and run the model unit tests:
 
@@ -31,7 +39,7 @@ Build and run the benchmarks:
 
 ```powershell
 C:\raylib\w64devkit\bin\g++.exe -std=c++17 -O2 -Wall -Wextra -Isrc -o benchmark.exe src\benchmark\benchmark.cpp src\models\BinaryTree.cpp
-.\benchmark.exe | Set-Content -Encoding utf8 benchmark_results.csv
+.\benchmark.exe --disable-events | Set-Content -Encoding utf8 benchmark_results.csv
 ```
 
 ## Controls
@@ -39,7 +47,7 @@ C:\raylib\w64devkit\bin\g++.exe -std=c++17 -O2 -Wall -Wextra -Isrc -o benchmark.
 - Click rooms to answer traversal, search, range, balance, LCA, and mirror challenges.
 - Type a number into the visible input box for root, height, diameter, insert, and delete questions. Press **Enter** or use the on-screen button.
 - Use the level's action buttons for AVL rotations and heap operations.
-- Press **Z** to undo where available and **H** for a hint (using a hint caps the level at two stars). Click **Reset** to restart a level. Use the mouse wheel to zoom, drag empty canvas to pan, and hover over a room to see its key, depth, height, and balance factor.
+- Press **Z** to undo the last tree, heap, or guided-level action. **Replay**, **Play/Pause**, the timeline, and the arrow keys step through recorded action states. **H** gives a hint and caps the level at two stars. Click **Reset** to restart a level. Use the mouse wheel to zoom, drag empty canvas to pan, and hover over a room to see its key, depth, height, and balance factor.
 - The title bar counts completed levels. The HUD shows alarm steps against the level capacity, score, and earned stars. Score follows the spec formula: 1000 − 10 × alarm steps − penalties, floored at 0. Completed level scores and stars are saved in `data/progress.txt`; the current level tree or heap is saved in `data/current_state.txt` using preorder null markers or the heap array.
 
 ## Demo route
@@ -58,6 +66,14 @@ For a shorter demo, show Levels **1.1**, **2.1**, and **2.2**.
 The four acts cover binary tree traversal and reconstruction, BST operations, AVL balancing and order statistics, and Max Heap operations. Level names, types, sizes, and random seeds are stored in `data/levels.json`.
 
 See [LEVELS_GUIDE.md](LEVELS_GUIDE.md) for instructions on adding levels and challenge types.
+
+## Other modes and event playback
+
+- **Endless** gives a timed stream of BST insert/delete operations with three lives and records local high scores.
+- **Sandbox** is a free-form BST and heap editor for demonstrating operations.
+- **Leaderboard** shows the ten highest local Endless scores. **Settings** switches the theme and frame limit.
+- The campaign map gates levels using saved completion progress and opens a briefing and result screen for each level.
+- GUI actions publish structured events through the event bus. The event log keeps the tree state after each event; playback and the scrubber display those saved states. Undo is available for tree edits, rotations, heap actions, and guided challenge selections/answers.
 
 ## Project evidence
 

@@ -365,9 +365,23 @@ static void benchmarkHeap(mt19937& rng) {
     }
 }
 
-int main() {
+int main(int argc, char** argv) {
+    bool eventsEnabled = true;
+    for (int i = 1; i < argc; ++i) {
+        string option = argv[i];
+        if (option == "--disable-events") eventsEnabled = false;
+        else if (option == "--help") {
+            cerr << "Usage: benchmark.exe [--disable-events]\n";
+            return 0;
+        } else {
+            cerr << "Unknown option: " << option << "\nUsage: benchmark.exe [--disable-events]\n";
+            return 2;
+        }
+    }
+    BinaryTree::setEventRecordingEnabled(eventsEnabled);
     mt19937 rng(SEED);
     cout << "# Vault Heist benchmark results; seed=" << SEED << "\n";
+    cout << "# Event recording: " << (eventsEnabled ? "enabled" : "disabled") << "\n";
     cout << "# HEIGHT: type,n,input,structure,height\n";
     benchmarkHeights(rng);
     cout << "# SEARCH: type,n,input,structure,queries,avg_comparisons,median_time_ns,checksum\n";

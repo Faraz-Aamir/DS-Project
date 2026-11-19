@@ -107,7 +107,7 @@ From the project root:
 
 ```powershell
 C:\raylib\w64devkit\bin\g++.exe -std=c++17 -O2 -Wall -Wextra -Isrc -o benchmark.exe src\benchmark\benchmark.cpp src\models\BinaryTree.cpp
-.\benchmark.exe | Set-Content -Encoding utf8 benchmark_results.csv
+.\benchmark.exe --disable-events | Set-Content -Encoding utf8 benchmark_results.csv
 ```
 
-The `SORT_COMPARE` rows in the CSV include the algorithm, size, input pattern, median nanoseconds, comparison count, swaps or moves, auxiliary array bytes, and maximum recursion depth.
+The benchmark accepts `--disable-events`, which disables returned model event records while measurements run. The benchmark does not use GUI rendering. The `SORT_COMPARE` rows in the CSV include the algorithm, size, input pattern, median nanoseconds, comparison count, swaps or moves, auxiliary array bytes, and maximum recursion depth.

@@ -57,8 +57,8 @@ For 10,000 sorted inserts, the BST height was 9,999 while the AVL height was 13.
 
 ## Implementation boundaries to explain honestly
 
-The current build includes the campaign level browser and tree/heap challenges, alarm capacity, the spec score formula, star awards, hint star cap, a result overlay, local active tree/heap save/load, zoom/pan, and room tooltips. Endless mode, Sandbox, Campaign Map, and a general event animation/replay controller are not implemented. Undo uses tree snapshots where supported. Large-tree pan/zoom performance and every fail-and-retry path have not been measured systematically.
+The current build includes a campaign level browser and tree/heap challenges, alarm capacity, the spec score formula, star awards, a hint star cap, a basic result overlay, local tree/heap save/load, zoom/pan, room tooltips, and invariant validation after input. `Validator` checks tree links/counts, BST ordering, AVL metadata and balance, and heap order. `BST::lcaBST` uses ordering to find the ancestor. Endless mode, Sandbox, Campaign Map, leaderboard, settings, a full main-menu/results flow, and a general event-driven animation/replay controller are not implemented. Events are only partially produced; undo uses tree snapshots for supported actions. Large-tree performance and every fail-and-retry path still need manual checks.
 
 ## Team preparation
 
-Both members should practise explaining at least one data structure, one complexity result, the test approach, and a live level. Be ready to point to the relevant model class and answer follow-up questions without relying only on the report.
+Both members should practise explaining at least one data structure, one complexity result, how `Validator` checks invariants, why `lcaBST` is O(h), the test approach, and a live level. Be ready to point to the relevant model class and answer follow-up questions without relying only on the report.

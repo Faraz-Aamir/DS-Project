@@ -4,6 +4,13 @@
 #include "LayoutEngine.h"
 #include "Renderer.h"
 #include "../level/LevelLoader.h"
+#include "../models/Validator.h"
+#include "../models/ScoreSystem.h"
+#include "../level/LevelManager.h"
+#include "EventLog.h"
+#include "AnimationController.h"
+#include "SaveManager.h"
+#include "UIManager.h"
 #include <string>
 #include <sstream>
 #include <vector>
@@ -59,6 +66,28 @@ static void collectRangeIds(TreeNode* n, int low, int high, std::vector<int>& ou
     if (key > low) collectRangeIds(n->left, low, high, out);
     if (key >= low && key <= high) out.push_back(n->id);
     if (key < high) collectRangeIds(n->right, low, high, out);
+}
+
+static void collectAllIds(TreeNode* n, std::vector<int>& out) {
+    if (!n) return;
+    out.push_back(n->id);
+    collectAllIds(n->left, out);
+    collectAllIds(n->right, out);
+}
+
+static void collectRangeSkippedIds(TreeNode* n, int low, int high, std::vector<int>& out) {
+    if (!n) return;
+    int key = ((BSTNode*)n)->key;
+    if (key < low) {
+        collectAllIds(n->left, out);
+        collectRangeSkippedIds(n->right, low, high, out);
+    } else if (key > high) {
+        collectAllIds(n->right, out);
+        collectRangeSkippedIds(n->left, low, high, out);
+    } else {
+        collectRangeSkippedIds(n->left, low, high, out);
+        collectRangeSkippedIds(n->right, low, high, out);
+    }
 }
 
 static int subtreeHeight(TreeNode* n) {
@@ -201,15 +230,18 @@ static std::vector<int> snapshotKeys(const std::string& data) {
 }
 
 int main() {
-    LevelLoader loader;
+    LevelManager levelManager;
+    LevelLoader& loader = levelManager.levels;
     std::string levelsPath = std::string(GetApplicationDirectory()) + "data/levels.json";
-    bool levelsLoaded = loader.load(levelsPath);
+    bool levelsLoaded = levelManager.load(levelsPath);
     if (!levelsLoaded) levelsLoaded = loader.load("data/levels.json");
     int totalLevels = 0;
     for (const Act& act : loader.acts) totalLevels += (int)act.levels.size();
 
     int actIdx = 0;
     int levelIdx = 0;
+    levelManager.actIndex = actIdx;
+    levelManager.levelIndex = levelIdx;
     const std::string activeStatePath = std::string(GetApplicationDirectory()) + "data/current_state.txt";
     {
         std::ifstream stateFile(activeStatePath);
@@ -227,6 +259,35 @@ int main() {
     }
 
     BST tree;
+    BST sandboxTree;
+    BST endlessTree;
+    MaxHeap sandboxHeap;
+    LayoutEngine sandboxLayout;
+    LayoutEngine endlessLayout;
+    EventBus eventBus;
+    EventLog eventLog;
+    eventLog.attach(eventBus);
+    AnimationController animation;
+    BinaryTree replayTree;
+    LayoutEngine replayLayout;
+    AppScreen screen = AppScreen::MainMenu;
+    bool menuDarkTheme = false;
+    bool quitRequested = false;
+    int targetFps = 60;
+    std::string screenMessage;
+    std::string sandboxInput;
+    int sandboxOperation = 0;
+    int sandboxQuery = 50;
+    bool sandboxHeapMode = false;
+    std::mt19937 endlessRandom((unsigned int)GetTime() + 20261119U);
+    int endlessScore = 0;
+    int endlessLives = 3;
+    int endlessValue = 50;
+    bool endlessInsert = true;
+    double endlessCountdown = 0.0;
+    double endlessInterval = 2.5;
+    bool endlessGameOver = false;
+    SaveManager saveManager(std::string(GetApplicationDirectory()) + "data/leaderboard.txt");
     std::vector<int> currentLevelKeys;
     std::vector<int> patrolOrder;
     std::vector<int> patrolVisited;
@@ -298,6 +359,32 @@ int main() {
         for (const std::string& id : completedLevels)
             progressFile << id << ' ' << (bestScores.count(id) ? bestScores[id] : 0) << ' '
                          << (bestStars.count(id) ? bestStars[id] : 0) << '\n';
+    };
+    auto prepareEndlessTask = [&]() {
+        std::uniform_int_distribution<int> keyDistribution(10, 999);
+        std::uniform_int_distribution<int> opDistribution(0, 1);
+        endlessInsert = opDistribution(endlessRandom) == 0 || endlessTree.nodeCount < 2;
+        endlessValue = keyDistribution(endlessRandom);
+        if (endlessInsert) {
+            while (endlessTree.search(endlessValue)) endlessValue = keyDistribution(endlessRandom);
+        } else {
+            std::vector<int> existing = endlessTree.inorder();
+            std::uniform_int_distribution<int> existingIndex(0, (int)existing.size() - 1);
+            endlessValue = existing[existingIndex(endlessRandom)];
+        }
+        endlessCountdown = endlessInterval;
+    };
+    auto startEndless = [&]() {
+        clearNodes(endlessTree.root);
+        endlessTree.root = nullptr;
+        endlessTree.nodeCount = 0;
+        for (int value : {50, 30, 70, 20, 40, 60, 80}) endlessTree.insert(value);
+        endlessScore = 0;
+        endlessLives = 3;
+        endlessInterval = 2.5;
+        endlessGameOver = false;
+        prepareEndlessTask();
+        screen = AppScreen::Endless;
     };
     std::vector<int> searchPath;
     std::vector<int> searchVisited;
@@ -428,6 +515,8 @@ int main() {
 
     auto resetToLevel = [&]() {
         if (!levelsLoaded || loader.acts.empty()) return;
+        eventLog.clear();
+        animation.stop();
         mistakesThisLevel = 0;
         alarmSteps = 0;
         alarmCapacity = 12;
@@ -460,6 +549,15 @@ int main() {
             appendMedianOrder(sorted, 0, (int)sorted.size() - 1, currentLevelKeys);
         } else if (lvl.id == "4.2") {
             currentLevelKeys = {1, 20, 3, 18, 16, 2, 10, 14, 8, 9, 5, 4};
+        } else if (lvl.id == "4.3") {
+            currentLevelKeys.clear();
+            for (int value = 100; (int)currentLevelKeys.size() < itemCount; --value)
+                currentLevelKeys.push_back(value);
+        } else if (lvl.id == "4.4") {
+            currentLevelKeys = {99, 90, 88, 80, 85, 82, 86, 70, 75, 77, 79, 71, 80, 83, 84};
+        } else if (lvl.id == "4.5") {
+            currentLevelKeys = {50, 50, 50, 40, 40, 50, 50, 30, 30, 40,
+                                40, 50, 30, 40, 50, 30, 40, 50, 40, 30};
         } else {
             currentLevelKeys = generateLevel(itemCount, lvl.seed);
         }
@@ -548,6 +646,8 @@ int main() {
     resetToLevel();
 
     std::vector<std::string> undoStack;
+    struct HeapUndoState { std::vector<int> heap; std::vector<int> extracted; int activeSize; bool complete; };
+    std::vector<HeapUndoState> heapUndoStack;
     LayoutEngine layout; Renderer renderer;
 
     const int WIN_W = 1100, WIN_H = 850;
@@ -568,6 +668,58 @@ int main() {
     const int canvasW  = WIN_W - 2 * canvasX;
     const int canvasH  = WIN_H - canvasY - 20;
     Rectangle canvas = { (float)canvasX, (float)canvasY, (float)canvasW, (float)canvasH };
+    Rectangle sandboxCanvas = {20, 255, 1060, 570};
+    auto refreshSandboxHeap = [&]() {
+        clearNodes(sandboxTree.root);
+        int nextId = 1;
+        sandboxTree.root = buildHeapView(sandboxHeap.heap, 0, nullptr, nextId);
+        sandboxTree.nodeCount = nextId - 1;
+    };
+    auto resetSandbox = [&]() {
+        clearNodes(sandboxTree.root);
+        sandboxTree.root = nullptr;
+        sandboxTree.nodeCount = 0;
+        if (sandboxHeapMode) {
+            sandboxHeap.heap = {12, 7, 10, 3, 5, 8};
+            refreshSandboxHeap();
+        } else {
+            for (int value : {50, 30, 70, 20, 40, 60, 80}) sandboxTree.insert(value);
+        }
+        sandboxQuery = 50;
+        sandboxInput = "50";
+        screenMessage = "Sandbox reset.";
+    };
+    auto runSandboxOperation = [&](int operation) {
+        if (sandboxInput.empty()) { screenMessage = "Enter a key first."; return; }
+        sandboxQuery = std::stoi(sandboxInput);
+        if (sandboxHeapMode) {
+            if (operation == 0) { sandboxHeap.insert(sandboxQuery); screenMessage = "Inserted into heap."; }
+            else if (operation == 1) { sandboxHeap.buildMaxHeap(sandboxHeap.heap); screenMessage = "Max Heap built."; }
+            else if (operation == 2 && !sandboxHeap.heap.empty())
+                screenMessage = "Extracted maximum: " + std::to_string(sandboxHeap.extractMax());
+            else if (operation == 3) { sandboxHeap.heapSort(); screenMessage = "Heap Sort complete."; }
+            else screenMessage = "Heap has no maximum to extract.";
+            refreshSandboxHeap();
+            return;
+        }
+        if (operation == 0) screenMessage = sandboxTree.insert(sandboxQuery) ? "Key inserted." : "Duplicate key rejected.";
+        else if (operation == 1) screenMessage = sandboxTree.remove(sandboxQuery) ? "Key deleted." : "Key not found.";
+        else if (operation == 2) screenMessage = sandboxTree.search(sandboxQuery) ? "Key found." : "Key not found.";
+        else if (operation == 3) {
+            std::vector<int> values = sandboxTree.rangeQuery(sandboxQuery - 10, sandboxQuery + 10);
+            screenMessage = "Range [key-10, key+10]: ";
+            for (int value : values) screenMessage += std::to_string(value) + " ";
+        } else if (operation == 4) {
+            BSTNode* ancestor = sandboxTree.lcaBST(sandboxQuery, sandboxQuery + 10);
+            screenMessage = ancestor ? "LCA: " + std::to_string(ancestor->key) : "One requested key is missing.";
+        } else if (operation == 5) {
+            sandboxTree.mirror(); screenMessage = "Tree mirrored.";
+        } else if (operation == 6) {
+            screenMessage = rotateLeftAt(sandboxTree, sandboxQuery) ? "Left rotation applied." : "No right child at that key.";
+        } else {
+            screenMessage = rotateRightAt(sandboxTree, sandboxQuery) ? "Right rotation applied." : "No left child at that key.";
+        }
+    };
     float cameraZoom = 1.0f;
     Vector2 cameraPan = {0, 0};
     Vector2 previousMouse = {0, 0};
@@ -580,11 +732,20 @@ int main() {
     int active = 0, iL = 0, dL = 0;
     std::string stat = "Ready.";
     Color statC = DARKGRAY;
+    auto recordEvent = [&](EventType type, int nodeId = -1, int otherNodeId = -1) {
+        if (!BinaryTree::eventRecordingEnabled) return;
+        Event event{};
+        event.type = type;
+        event.nodeId = nodeId;
+        event.otherNodeId = otherNodeId;
+        eventBus.publish(event, serializeTree(tree.getRoot()));
+        animation.seek((int)eventLog.size() - 1, (int)eventLog.size());
+    };
 
     auto chargeAlarm = [&](int amount = 1) {
         if (alarmFailed || isCurrentLevelComplete()) return;
         alarmSteps += amount;
-        alarmCapacity = std::max(1, (3 * optimalSteps() + 1) / 2 + 2);
+        alarmCapacity = ScoreSystem::alarmCapacity(optimalSteps());
         if (alarmSteps >= alarmCapacity) {
             alarmSteps = alarmCapacity;
             alarmFailed = true;
@@ -683,8 +844,22 @@ int main() {
     };
 
     auto doUndo = [&]() {
+        if (isHeapLevel()) {
+            if (heapUndoStack.empty()) { stat = "Nothing to undo"; statC = ERR_C; return; }
+            HeapUndoState previous = std::move(heapUndoStack.back());
+            heapUndoStack.pop_back();
+            heapState.heap = std::move(previous.heap);
+            extractedValues = std::move(previous.extracted);
+            activeHeapSize = previous.activeSize;
+            heapTaskComplete = previous.complete;
+            refreshHeapView();
+            recordEvent(EventType::UNDO);
+            stat = "Last heap operation undone."; statC = OK_C;
+            return;
+        }
         if (isOrderStatisticLevel()) {
             orderStatisticComplete = false;
+            recordEvent(EventType::UNDO);
             stat = "Target selection undone."; statC = OK_C;
             return;
         }
@@ -695,6 +870,7 @@ int main() {
         if (isBalanceLevel()) {
             if (!unbalancedSelected.empty()) {
                 unbalancedSelected.pop_back();
+                recordEvent(EventType::UNDO);
                 stat = "Last room selection undone."; statC = OK_C;
             } else {
                 stat = "No room selections to undo."; statC = ERR_C;
@@ -704,6 +880,7 @@ int main() {
         if (isRangeLevel()) {
             if (!rangeVisited.empty()) {
                 rangeVisited.pop_back();
+                recordEvent(EventType::UNDO);
                 stat = "Last range selection undone."; statC = OK_C;
             } else {
                 stat = "No range selections to undo."; statC = ERR_C;
@@ -717,6 +894,7 @@ int main() {
                 TreeNode* node = findNodeById(tree.getRoot(), id);
                 if (node) std::swap(node->left, node->right);
                 layout.calculateLayout(tree.getRoot(), canvas, 50, 80, 80.0f);
+                recordEvent(EventType::UNDO);
                 stat = "Last mirror action undone."; statC = OK_C;
             } else {
                 stat = "No mirror actions to undo."; statC = ERR_C;
@@ -724,11 +902,14 @@ int main() {
             return;
         }
         if (isLcaLevel()) {
+            bool changed = false;
             if (lcaComplete) {
                 lcaComplete = false;
+                changed = true;
                 stat = "LCA answer cleared."; statC = OK_C;
             } else if (!lcaSelected.empty()) {
                 lcaSelected.pop_back();
+                changed = true;
                 stat = "Last room selection undone."; statC = OK_C;
             } else {
                 stat = "No room selections to undo."; statC = ERR_C;
@@ -737,12 +918,24 @@ int main() {
                                      ? tree.lca(lcaSelected[0], lcaSelected[1])
                                      : nullptr;
             lcaExpectedId = ancestor ? ancestor->id : -1;
+            if (changed) recordEvent(EventType::UNDO);
             return;
         }
         if (isHeightDiameterLevel()) {
-            if (heightDiameterStep > 0) --heightDiameterStep;
+            if (heightDiameterStep > 0) { --heightDiameterStep; recordEvent(EventType::UNDO); }
             insB[0] = '\0'; iL = 0;
             stat = "Last answer undone."; statC = OK_C;
+            return;
+        }
+        if (isReconstructionLevel()) {
+            if (reconstructionComplete) {
+                reconstructionComplete = false;
+                insB[0] = '\0'; iL = 0;
+                recordEvent(EventType::UNDO);
+                stat = "Reconstruction answer undone."; statC = OK_C;
+            } else {
+                stat = "No reconstruction answer to undo."; statC = ERR_C;
+            }
             return;
         }
         if (isSearchLevel()) {
@@ -750,6 +943,7 @@ int main() {
                 stat = "No search steps to undo"; statC = ERR_C;
             } else {
                 searchVisited.pop_back();
+                recordEvent(EventType::UNDO);
                 stat = "Last search choice undone"; statC = OK_C;
             }
             return;
@@ -759,6 +953,7 @@ int main() {
                 stat = "No patrol steps to undo"; statC = ERR_C;
             } else {
                 patrolVisited.pop_back();
+                recordEvent(EventType::UNDO);
                 stat = "Last patrol choice undone"; statC = OK_C;
             }
             return;
@@ -769,12 +964,17 @@ int main() {
         std::string snap = undoStack.back();
         undoStack.pop_back();
         loadKeys(snapshotKeys(snap));
+        recordEvent(EventType::UNDO);
         if (isInsertLevel()) insertCompleted = false;
         if (isDeleteLevel()) deleteCompleted = false;
         stat = "Undone"; statC = OK_C;
     };
 
     auto doReset = [&]() {
+        eventLog.clear();
+        animation.stop();
+        undoStack.clear();
+        heapUndoStack.clear();
         mistakesThisLevel = 0;
         lastCountedError.clear();
         alarmSteps = 0;
@@ -783,6 +983,7 @@ int main() {
         starCap = 3;
         alarmFailed = false;
         if (isHeapLevel()) {
+            heapUndoStack.clear();
             resetToLevel();
             relayout();
             stat = "Heap level reset."; statC = OK_C;
@@ -885,6 +1086,8 @@ int main() {
             } else {
                 undoStack.push_back(serializeTree(tree.getRoot()));
                 if (tree.insert(v)) {
+                    BSTNode* insertedNode = tree.search(v);
+                    recordEvent(EventType::INSERT, insertedNode ? insertedNode->id : -1);
                     if (isInsertLevel()) {
                         insertCompleted = true;
                         stat = "Target secured! Insert level complete.";
@@ -909,6 +1112,7 @@ int main() {
             } else {
                 undoStack.push_back(serializeTree(tree.getRoot()));
                 tree.remove(v);
+                recordEvent(EventType::UNLINK);
                 if (isDeleteLevel()) {
                     deleteCompleted = true;
                     stat = "Target removed. Successor replacement complete.";
@@ -933,9 +1137,11 @@ int main() {
             return;
         }
         undoStack.push_back(serializeTree(tree.getRoot()));
+        BSTNode* rotationPivot = tree.search(singleRotationCase == "LL" ? 30 : 70);
         const bool rotated = singleRotationCase == "LL"
             ? rotateRightAt(tree, 30) : rotateLeftAt(tree, 70);
         if (rotated) {
+            recordEvent(EventType::ROTATE, rotationPivot ? rotationPivot->id : -1);
             relayout();
             std::vector<int> remaining;
             collectUnbalancedIds(tree.getRoot(), remaining);
@@ -972,6 +1178,7 @@ int main() {
             return;
         }
         ++doubleRotationStep;
+        recordEvent(EventType::ROTATE);
         relayout();
         if (doubleRotationStep == 1) {
             stat = doubleRotationCase == "LR"
@@ -998,7 +1205,9 @@ int main() {
         } else {
             undoStack.push_back(serializeTree(tree.getRoot()));
             tree.insert(10);
+            recordEvent(EventType::INSERT);
             if (rotateRightAt(tree, 30)) {
+                recordEvent(EventType::ROTATE);
                 relayout();
                 insertPredictComplete = true;
                 stat = "Correct prediction. LL rotation applied automatically."; statC = OK_C;
@@ -1014,11 +1223,18 @@ int main() {
         chargeAlarm();
         if (alarmFailed) return;
         const std::string& levelId = loader.acts[actIdx].levels[levelIdx].id;
+        const bool willChange = levelId == "4.1" || levelId == "4.2" ||
+                                (levelId == "4.3" && !heapState.heap.empty()) ||
+                                ((levelId == "4.4" || levelId == "4.5") && activeHeapSize > 1);
+        if (willChange) heapUndoStack.push_back({heapState.heap, extractedValues,
+                                                 activeHeapSize, heapTaskComplete});
         if (levelId == "4.1" || levelId == "4.2") {
             std::vector<int> input = heapState.heap;
             heapState.buildMaxHeap(input);
             refreshHeapView();
             heapTaskComplete = heapState.isMaxHeap();
+            recordEvent(EventType::HEAP_BUILD);
+            recordEvent(EventType::HEAPIFY_DONE);
             stat = heapTaskComplete ? "Max Heap property restored." : "Heap construction failed.";
             statC = heapTaskComplete ? OK_C : ERR_C;
         } else if (levelId == "4.3") {
@@ -1029,6 +1245,7 @@ int main() {
                 extractedValues.push_back(heapState.extractMax());
                 activeHeapSize = (int)heapState.heap.size();
                 refreshHeapView();
+                recordEvent(EventType::EXTRACT_MAX);
                 heapTaskComplete = heapState.heap.empty();
                 stat = heapTaskComplete ? "All maxima extracted." : "Maximum extracted. Continue.";
                 statC = OK_C;
@@ -1038,6 +1255,10 @@ int main() {
             --activeHeapSize;
             heapState.siftDown(0, activeHeapSize);
             refreshHeapView();
+            recordEvent(EventType::HEAP_SWAP, 0, activeHeapSize);
+            recordEvent(EventType::HEAP_SIZE_CHANGE);
+            recordEvent(EventType::HEAPIFY_DONE);
+            recordEvent(EventType::MARK_SORTED, activeHeapSize);
             heapTaskComplete = activeHeapSize <= 1;
             stat = heapTaskComplete ? "Heap Sort complete. Array is sorted." : "Sort step complete. Continue.";
             statC = OK_C;
@@ -1045,17 +1266,28 @@ int main() {
     };
 
     auto heapArrayText = [&]() {
-        std::string result = "Array: ";
+        const std::string& id = loader.acts[actIdx].levels[levelIdx].id;
+        std::string result = (id == "4.4" || id == "4.5") ? "Active heap: [" : "Heap array: [";
         for (int i = 0; i < (int)heapState.heap.size(); ++i) {
-            if (i) result += " ";
-            if ((loader.acts[actIdx].levels[levelIdx].id == "4.4" ||
-                 loader.acts[actIdx].levels[levelIdx].id == "4.5") && i == activeHeapSize)
-                result += "| ";
+            if (i && ((id != "4.4" && id != "4.5") || i != activeHeapSize)) result += " ";
+            if ((id == "4.4" || id == "4.5") && i == activeHeapSize) {
+                result += "]  |  Sorted region: [";
+            }
             result += std::to_string(heapState.heap[i]);
         }
-        if (loader.acts[actIdx].levels[levelIdx].id == "4.3" && !extractedValues.empty()) {
-            result += "   Extracted: ";
-            for (int value : extractedValues) result += std::to_string(value) + " ";
+        if (id == "4.4" || id == "4.5") {
+            if (activeHeapSize >= (int)heapState.heap.size()) result += "]  |  Sorted region: [";
+            result += "]";
+        }
+        if (id == "4.3" && !extractedValues.empty()) {
+            result += "]  |  Extracted (max first): [";
+            for (size_t i = 0; i < extractedValues.size(); ++i) {
+                if (i) result += " ";
+                result += std::to_string(extractedValues[i]);
+            }
+            result += "]";
+        } else if (id != "4.4" && id != "4.5") {
+            result += "]";
         }
         return result;
     };
@@ -1069,6 +1301,7 @@ int main() {
             return;
         }
         int answer = std::stoi(insB);
+        recordEvent(EventType::ANSWER);
         if (answer != preorderClue.front()) {
             stat = "Not the root. Use the traversal clues and try again."; statC = ERR_C;
             return;
@@ -1098,6 +1331,7 @@ int main() {
             return;
         }
         int answer = std::stoi(insB);
+        recordEvent(EventType::ANSWER);
         int expected = heightDiameterStep == 0 ? heightTarget : diameterTarget;
         if (answer != expected) {
             stat = heightDiameterStep == 0 ? "That height is not correct. Count edges from root to deepest leaf."
@@ -1127,8 +1361,124 @@ int main() {
 
     double lastStateSave = GetTime();
     while (!WindowShouldClose()) {
-        alarmCapacity = std::max(1, (3 * optimalSteps() + 1) / 2 + 2);
+        if (screen != AppScreen::Gameplay) {
+            Vector2 mouse = GetMousePosition();
+            Color background = menuDarkTheme ? Color{24,30,42,255} : Color{245,247,250,255};
+            if (IsKeyPressed(KEY_ESCAPE)) screen = screen == AppScreen::Result ? AppScreen::CampaignMap : AppScreen::MainMenu;
+            BeginDrawing(); ClearBackground(background);
+            if (screen == AppScreen::MainMenu) {
+                UIManager::title("VAULT HEIST");
+                DrawText("Choose a way into the vault", 375, 108, 22, menuDarkTheme ? RAYWHITE : DARKGRAY);
+                const char* labels[] = {"Campaign", "Endless Mode", "Sandbox", "Leaderboard", "Settings", "Quit"};
+                AppScreen destinations[] = {AppScreen::CampaignMap, AppScreen::Endless, AppScreen::Sandbox,
+                                             AppScreen::Leaderboard, AppScreen::Settings, AppScreen::MainMenu};
+                for (int i=0;i<6;++i) if (UIManager::button({390,145.0f+i*78.0f,320,58},labels[i],mouse)) {
+                    if (i==0) screen=destinations[i];
+                    else if (i==1) startEndless();
+                    else if (i==2) { sandboxHeapMode=false; resetSandbox(); screen=AppScreen::Sandbox; }
+                    else if (i==3 || i==4) screen=destinations[i];
+                    else quitRequested=true;
+                }
+                DrawText(("Campaign progress: "+std::to_string(completedLevels.size())+" / "+std::to_string(totalLevels)).c_str(),400,630,20,menuDarkTheme?RAYWHITE:DARKGRAY);
+            } else if (screen == AppScreen::CampaignMap) {
+                UIManager::title("CAMPAIGN MAP");
+                for(int a=0;a<(int)loader.acts.size();++a){
+                    float y=105.0f+a*168.0f;
+                    DrawText(("Act "+std::to_string(loader.acts[a].act)+": "+loader.acts[a].title).c_str(),28,(int)y,19,menuDarkTheme?RAYWHITE:DARKBLUE);
+                    for(int l=0;l<(int)loader.acts[a].levels.size();++l){
+                        const Level& level=loader.acts[a].levels[l]; bool unlocked=levelManager.unlocked(a,l,completedLevels);
+                        int stars=bestStars.count(level.id)?bestStars[level.id]:0;
+                        Rectangle node={30.0f+l*210.0f,y+33,190,85};
+                        std::string label=level.id+" ["+std::string(stars,'*')+std::string(3-stars,'-')+"]";
+                        if(unlocked){
+                            if(UIManager::button(node,label,mouse)){actIdx=a;levelIdx=l;levelManager.actIndex=a;levelManager.levelIndex=l;resetToLevel();undoStack.clear();heapUndoStack.clear();relayout();screen=AppScreen::LevelBriefing;}
+                            DrawText(level.name.c_str(),(int)node.x+5,(int)node.y+65,13,menuDarkTheme?RAYWHITE:DARKGRAY);
+                        }else{DrawRectangleRec(node,Color{205,208,214,255});DrawRectangleLinesEx(node,1,GRAY);DrawText("LOCKED",(int)node.x+12,(int)node.y+28,17,DARKGRAY);}
+                    }
+                }
+                if(UIManager::button({28,790,150,42},"Main Menu",mouse))screen=AppScreen::MainMenu;
+            } else if (screen == AppScreen::LevelBriefing) {
+                const Level& level=loader.acts[actIdx].levels[levelIdx];
+                UIManager::title("LEVEL BRIEFING");
+                DrawText(("Act "+std::to_string(loader.acts[actIdx].act)+": "+loader.acts[actIdx].title).c_str(),300,165,22,menuDarkTheme?RAYWHITE:DARKGRAY);
+                DrawText((level.id+": "+level.name).c_str(),300,215,28,DARKBLUE);
+                DrawText(("Challenge type: "+level.type).c_str(),300,265,21,menuDarkTheme?RAYWHITE:DARKGRAY);
+                DrawText(("Rooms/elements: "+std::to_string(level.nodes>0?level.nodes:level.elements)).c_str(),300,305,21,menuDarkTheme?RAYWHITE:DARKGRAY);
+                DrawText("Complete the objective before the alarm fills.",300,350,21,menuDarkTheme?RAYWHITE:DARKGRAY);
+                if(UIManager::button({385,430,160,58},"Back",mouse))screen=AppScreen::CampaignMap;
+                if(UIManager::button({565,430,180,58},"Start Level",mouse)){screen=AppScreen::Gameplay;stat="Started Level "+level.id;statC=OK_C;}
+            } else if (screen == AppScreen::Result) {
+                UIManager::title("LEVEL RESULTS");
+                bool failed=alarmFailed;
+                DrawText(failed?"Alarm reached capacity":"Vault challenge complete",260,170,28,failed?MAROON:DARKGREEN);
+                DrawText(("Alarm steps: "+std::to_string(alarmSteps)+" / "+std::to_string(alarmCapacity)).c_str(),330,225,22,menuDarkTheme?RAYWHITE:DARKGRAY);
+                DrawText(("Score: "+std::to_string(ScoreSystem::score(alarmSteps,scorePenalties))+"    Stars: "+std::string(starsEarned,'*')+std::string(3-starsEarned,'-')).c_str(),330,265,22,menuDarkTheme?RAYWHITE:DARKGRAY);
+                if(UIManager::button({170,370,190,56},"Retry",mouse)){resetToLevel();undoStack.clear();heapUndoStack.clear();relayout();screen=AppScreen::Gameplay;}
+                bool hasNext=levelIdx+1<(int)loader.acts[actIdx].levels.size()||actIdx+1<(int)loader.acts.size();
+                if(hasNext&&!failed&&UIManager::button({455,370,190,56},"Next Level",mouse)){
+                    if(levelIdx+1<(int)loader.acts[actIdx].levels.size())++levelIdx;else{++actIdx;levelIdx=0;}
+                    levelManager.actIndex=actIdx;levelManager.levelIndex=levelIdx;resetToLevel();undoStack.clear();heapUndoStack.clear();relayout();screen=AppScreen::Gameplay;
+                }
+                if(UIManager::button({740,370,190,56},"Campaign Map",mouse))screen=AppScreen::CampaignMap;
+                if(UIManager::button({455,455,190,56},"Main Menu",mouse))screen=AppScreen::MainMenu;
+            } else if (screen == AppScreen::Leaderboard) {
+                UIManager::title("LOCAL ENDLESS LEADERBOARD"); auto scores=saveManager.topScores();
+                if(scores.empty())DrawText("No Endless runs recorded yet.",360,150,22,menuDarkTheme?RAYWHITE:DARKGRAY);
+                for(int i=0;i<(int)scores.size();++i)DrawText((std::to_string(i+1)+".    "+std::to_string(scores[i])+" operations").c_str(),390,150+i*42,21,menuDarkTheme?RAYWHITE:DARKGRAY);
+                if(UIManager::button({28,790,150,42},"Main Menu",mouse))screen=AppScreen::MainMenu;
+            } else if (screen == AppScreen::Settings) {
+                UIManager::title("SETTINGS");
+                if(UIManager::button({330,190,440,62},"Frame limit: "+std::to_string(targetFps)+" FPS",mouse)){targetFps=targetFps==60?30:60;SetTargetFPS(targetFps);}
+                if(UIManager::button({330,280,440,62},std::string("Theme: ")+(menuDarkTheme?"Dark":"Light"),mouse))menuDarkTheme=!menuDarkTheme;
+                if(UIManager::button({28,790,150,42},"Main Menu",mouse))screen=AppScreen::MainMenu;
+            } else if (screen == AppScreen::Endless) {
+                UIManager::title("ENDLESS MODE - SURVIVE THE OPERATION STREAM");
+                if(!endlessGameOver){
+                    endlessCountdown-=GetFrameTime();
+                    if(endlessCountdown<=0){--endlessLives;if(endlessLives<=0){endlessGameOver=true;saveManager.addScore(endlessScore);}else prepareEndlessTask();}
+                    bool apply=UIManager::button({430,112,230,58},"Apply Operation [Space]",mouse)||IsKeyPressed(KEY_SPACE);
+                    if(apply&&!endlessGameOver){if(endlessInsert)endlessTree.insert(endlessValue);else endlessTree.remove(endlessValue);++endlessScore;endlessInterval=std::max(0.65,2.5-endlessScore*0.035);prepareEndlessTask();}
+                    DrawText((std::string(endlessInsert?"INSERT ":"DELETE ")+std::to_string(endlessValue)+"    Deadline: "+std::to_string((int)std::ceil(endlessCountdown))+"s").c_str(),330,184,24,menuDarkTheme?RAYWHITE:DARKGRAY);
+                    DrawText(("Score: "+std::to_string(endlessScore)+"    Lives: "+std::string(endlessLives,'*')).c_str(),400,218,21,menuDarkTheme?RAYWHITE:DARKGRAY);
+                    endlessLayout.calculateLayout(endlessTree.root,sandboxCanvas,30,60,65);BeginScissorMode((int)sandboxCanvas.x,(int)sandboxCanvas.y,(int)sandboxCanvas.width,(int)sandboxCanvas.height);renderer.drawTree(endlessTree.root,endlessLayout,{},sandboxCanvas);EndScissorMode();
+                }else{DrawText(("Run ended. Final score: "+std::to_string(endlessScore)).c_str(),340,210,28,MAROON);if(UIManager::button({410,320,260,60},"Leaderboard",mouse))screen=AppScreen::Leaderboard;}
+                if(UIManager::button({28,790,150,42},"Main Menu",mouse))screen=AppScreen::MainMenu;
+            } else if (screen == AppScreen::Sandbox) {
+                UIManager::title("SANDBOX - FREE-FORM STRUCTURE EDITOR");
+                if(UIManager::button({20,82,135,42},"Main Menu",mouse))screen=AppScreen::MainMenu;
+                if(UIManager::button({175,82,150,42},sandboxHeapMode?"Switch to BST":"Switch to Heap",mouse)){sandboxHeapMode=!sandboxHeapMode;resetSandbox();}
+                DrawText("Key:",350,94,19,menuDarkTheme?RAYWHITE:DARKGRAY);DrawRectangle(405,82,95,42,RAYWHITE);DrawRectangleLines(405,82,95,42,DARKBLUE);DrawText(sandboxInput.c_str(),415,94,20,BLACK);
+                if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT)&&CheckCollisionPointRec(mouse,{405,82,95,42}))sandboxOperation=99;
+                if(sandboxOperation==99){if(IsKeyPressed(KEY_BACKSPACE)&&!sandboxInput.empty())sandboxInput.pop_back();int ch=GetCharPressed();while(ch>0){if(ch>='0'&&ch<='9'&&sandboxInput.size()<4)sandboxInput.push_back((char)ch);ch=GetCharPressed();}}
+                const char* treeOps[]={"Insert","Delete","Search","Range","LCA","Mirror","Rotate Left","Rotate Right","Reset"};
+                const char* heapOps[]={"Insert","Build Heap","Extract Max","Heap Sort","Reset"};int ops=sandboxHeapMode?5:9;
+                for(int i=0;i<ops;++i){int col=i%5,row=i/5;Rectangle b={20.0f+col*212.0f,142.0f+row*50.0f,195,40};if(UIManager::button(b,sandboxHeapMode?heapOps[i]:treeOps[i],mouse)){if(i==ops-1)resetSandbox();else runSandboxOperation(i);}}
+                DrawText(screenMessage.c_str(),25,238,17,menuDarkTheme?RAYWHITE:DARKGRAY);
+                if(sandboxHeapMode){std::string values="Heap array: ";for(int v:sandboxHeap.heap)values+=std::to_string(v)+" ";DrawText(values.c_str(),25,260,18,DARKBLUE);}
+                sandboxLayout.calculateLayout(sandboxTree.root,sandboxCanvas,25,60,60);BeginScissorMode((int)sandboxCanvas.x,(int)sandboxCanvas.y,(int)sandboxCanvas.width,(int)sandboxCanvas.height);renderer.drawTree(sandboxTree.root,sandboxLayout,{},sandboxCanvas);EndScissorMode();
+            }
+            EndDrawing();
+            if(quitRequested)break;
+            continue;
+        }
+        if(IsKeyPressed(KEY_ESCAPE)){screen=AppScreen::CampaignMap;continue;}
+        alarmCapacity = ScoreSystem::alarmCapacity(optimalSteps());
+        if(IsKeyPressed(KEY_SPACE))animation.toggle();
+        if(IsKeyPressed(KEY_RIGHT))animation.step(1,(int)eventLog.size());
+        if(IsKeyPressed(KEY_LEFT))animation.step(-1,(int)eventLog.size());
+        animation.update(GetFrameTime(),(int)eventLog.size());
+        if (animation.currentIndex() >= 0 && animation.currentIndex() < (int)eventLog.size()) {
+            clearNodes(replayTree.getRoot());
+            replayTree.root = deserializeTree(eventLog.stateAt((size_t)animation.currentIndex()),
+                                              replayTree.nodeCount);
+            replayLayout.calculateLayout(replayTree.getRoot(), canvas, 50, 80, 80.0f);
+        }
         Vector2 m = GetMousePosition();
+        Rectangle timelineRect={canvas.x+canvas.width-290,canvas.y+8,260,14};
+        if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT)&&eventLog.size()>0&&CheckCollisionPointRec(m,timelineRect)){
+            float t=(m.x-timelineRect.x)/timelineRect.width;
+            animation.seek((int)(t*(eventLog.size()-1)),(int)eventLog.size());
+        }
         auto toScreen = [&](const NodePosition& p) {
             return Vector2{canvas.x + canvas.width / 2.0f + (p.x - (canvas.x + canvas.width / 2.0f)) * cameraZoom + cameraPan.x,
                            canvas.y + canvas.height / 2.0f + (p.y - (canvas.y + canvas.height / 2.0f)) * cameraZoom + cameraPan.y};
@@ -1183,7 +1533,7 @@ int main() {
         Rectangle measureAnswerRect = { 100, (float)row2Y, 60, 30 };
 
         // ---- Input handling ----
-        if (!alarmFailed && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && isGuidedLevel() &&
+        if (!alarmFailed && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && isGuidedLevel() && !CheckCollisionPointRec(m,timelineRect) &&
             CheckCollisionPointRec(m, { (float)canvasX, (float)canvasY, (float)canvasW, (float)canvasH })) {
             for (const auto& entry : layout.positions) {
                 const NodePosition& pos = entry.second;
@@ -1291,6 +1641,11 @@ int main() {
                             stat = "Level already complete. Reset to try again."; statC = OK_C;
                         }
                     }
+                    EventType clickEvent = isMirrorLevel() ? EventType::MIRROR
+                        : (isSearchLevel() || isDegenerationLevel()) ? EventType::COMPARE
+                        : isBalanceLevel() ? EventType::BALANCE_ALERT
+                        : isLcaLevel() ? EventType::PATH_TO : EventType::VISIT;
+                    recordEvent(clickEvent, entry.first);
                     break;
                 }
             }
@@ -1335,11 +1690,38 @@ int main() {
             statC = OK_C;
         }
         if (IsKeyPressed(KEY_Z)) doUndo();
+        bool validateAfterInput = IsMouseButtonPressed(MOUSE_BUTTON_LEFT) ||
+                                  IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_Z);
+        if (validateAfterInput) {
+            ValidationResult validation = Validator::validateTreeLinks(tree.getRoot(), tree.nodeCount);
+            if (!validation.valid) {
+                stat = "Invariant error: " + validation.message;
+                statC = ERR_C;
+            }
+            if (isHeapLevel()) {
+                const std::string& id = loader.acts[actIdx].levels[levelIdx].id;
+                bool heapShouldBeValid = id != "4.1" && id != "4.2";
+                if (heapShouldBeValid) {
+                    int checkedSize = (id == "4.4" || id == "4.5")
+                                          ? activeHeapSize : (int)heapState.heap.size();
+                    ValidationResult heapValidation = Validator::validateHeap(heapState, checkedSize);
+                    if (!heapValidation.valid) {
+                        stat = "Invariant error: " + heapValidation.message;
+                        statC = ERR_C;
+                    }
+                }
+            } else if (!isMirrorLevel() && !isReconstructionLevel()) {
+                ValidationResult bstValidation = Validator::validateBST(tree);
+                if (!bstValidation.valid) {
+                    stat = "Invariant error: " + bstValidation.message;
+                    statC = ERR_C;
+                }
+            }
+        }
         if (isCurrentLevelComplete()) {
             const std::string& completedId = loader.acts[actIdx].levels[levelIdx].id;
-            int score = std::max(0, 1000 - 10 * alarmSteps - scorePenalties);
-            starsEarned = std::min(starCap, alarmSteps <= optimalSteps() && scorePenalties == 0 ? 3
-                        : alarmSteps <= (5 * optimalSteps()) / 4 && scorePenalties <= 1 ? 2 : 1);
+            int score = ScoreSystem::score(alarmSteps, scorePenalties);
+            starsEarned = ScoreSystem::stars(alarmSteps, optimalSteps(), scorePenalties, starCap);
             bool newCompletion = completedLevels.insert(completedId).second;
             auto best = bestScores.find(completedId);
             bool scoreImproved = newCompletion || best == bestScores.end() || score > best->second;
@@ -1349,7 +1731,9 @@ int main() {
                 if (starsImproved) bestStars[completedId] = starsEarned;
                 saveCampaignProgress();
             }
+            screen = AppScreen::Result;
         }
+        if(alarmFailed)screen=AppScreen::Result;
         if (GetTime() - lastStateSave >= 1.0) {
             saveActiveState();
             lastStateSave = GetTime();
@@ -1464,17 +1848,19 @@ int main() {
             }
 
             if (drawBtn(pActBt, "Prev Act")) {
-                if (actIdx > 0) { actIdx--; levelIdx = 0; resetToLevel(); undoStack.clear(); stat = "Switched to Act " + std::to_string(loader.acts[actIdx].act); statC = OK_C; relayout(); }
+                if (actIdx > 0) { actIdx--; levelIdx = 0; resetToLevel(); undoStack.clear(); heapUndoStack.clear(); stat = "Switched to Act " + std::to_string(loader.acts[actIdx].act); statC = OK_C; relayout(); }
             }
             if (drawBtn(nActBt, "Next Act")) {
-                if (actIdx < (int)loader.acts.size() - 1) { actIdx++; levelIdx = 0; resetToLevel(); undoStack.clear(); stat = "Switched to Act " + std::to_string(loader.acts[actIdx].act); statC = OK_C; relayout(); }
+                if (actIdx < (int)loader.acts.size() - 1) { actIdx++; levelIdx = 0; resetToLevel(); undoStack.clear(); heapUndoStack.clear(); stat = "Switched to Act " + std::to_string(loader.acts[actIdx].act); statC = OK_C; relayout(); }
             }
             if (drawBtn(pLvlBt, "Prev Lvl")) {
-                if (levelIdx > 0) { levelIdx--; resetToLevel(); undoStack.clear(); stat = "Switched to Level " + loader.acts[actIdx].levels[levelIdx].id; statC = OK_C; relayout(); }
+                if (levelIdx > 0) { levelIdx--; resetToLevel(); undoStack.clear(); heapUndoStack.clear(); stat = "Switched to Level " + loader.acts[actIdx].levels[levelIdx].id; statC = OK_C; relayout(); }
             }
             if (drawBtn(nLvlBt, "Next Lvl")) {
-                if (levelIdx < (int)loader.acts[actIdx].levels.size() - 1) { levelIdx++; resetToLevel(); undoStack.clear(); stat = "Switched to Level " + loader.acts[actIdx].levels[levelIdx].id; statC = OK_C; relayout(); }
+                if (levelIdx < (int)loader.acts[actIdx].levels.size() - 1) { levelIdx++; resetToLevel(); undoStack.clear(); heapUndoStack.clear(); stat = "Switched to Level " + loader.acts[actIdx].levels[levelIdx].id; statC = OK_C; relayout(); }
             }
+            if(drawBtn({920,(float)row1Y,74,30},"Replay")){animation.seek(0,(int)eventLog.size());animation.play();}
+            if(drawBtn({1000,(float)row1Y,80,30},animation.isPlaying()?"Pause":"Play"))animation.toggle();
 
             // Row 2: Undo / Reset / counter (left aligned)
             float bx = 30;
@@ -1486,8 +1872,9 @@ int main() {
                                    : "Sort Step";
                 if (drawBtn({ 30, (float)row2Y, 130, 30 }, action)) doHeapAction();
                 if (drawBtn({ 170, (float)row2Y, 70, 30 }, "Reset")) doReset();
+                if (drawBtn({ 250, (float)row2Y, 75, 30 }, "Undo [Z]")) doUndo();
                 DrawText(heapTaskComplete ? "Complete" : "Use the action to continue",
-                         260, row2Y + 7, 16, DARKGRAY);
+                         340, row2Y + 7, 16, DARKGRAY);
             } else if (isInsertPredictLevel()) {
                 if (drawBtn({ 30, (float)row2Y, 80, 30 }, "Undo [Z]")) doUndo();
                 if (drawBtn({ 122, (float)row2Y, 55, 30 }, "LL")) predictInsertion("LL");
@@ -1621,6 +2008,15 @@ int main() {
 
             // Canvas
             BeginScissorMode(canvasX, canvasY, canvasW, canvasH);
+                DrawRectangleRec(timelineRect, LIGHTGRAY);
+                DrawRectangleLinesEx(timelineRect,1,DARKGRAY);
+                if(eventLog.size()>1&&animation.currentIndex()>=0){
+                    float progress=(float)animation.currentIndex()/(float)(eventLog.size()-1);
+                    DrawRectangleRec({timelineRect.x,timelineRect.y,timelineRect.width*progress,timelineRect.height},SKYBLUE);
+                    DrawCircleV({timelineRect.x+timelineRect.width*progress,timelineRect.y+timelineRect.height/2},5,ORANGE);
+                }
+                std::string eventLabel=eventLog.empty()?"Event log: no actions yet":"Event "+std::to_string(animation.currentIndex()+1)+" / "+std::to_string(eventLog.size())+"   [Space] play/pause [Left/Right] step";
+                DrawText(eventLabel.c_str(),(int)timelineRect.x,(int)timelineRect.y+18,13,DARKGRAY);
                 if (isHeapLevel()) {
                     std::string arrayText = heapArrayText();
                     DrawText(arrayText.c_str(), canvasX + 15, canvasY + 10, 18, DARKGRAY);
@@ -1644,6 +2040,15 @@ int main() {
                         for (int id : visited) highlights[id] = BLUE;
                     }
                 }
+                if (isRangeLevel()) {
+                    std::vector<int> skipped;
+                    collectRangeSkippedIds(tree.getRoot(), rangeLow, rangeHigh, skipped);
+                    for (int id : skipped) highlights[id] = Color{215, 215, 215, 255};
+                }
+                if (isBalanceLevel()) {
+                    for (int id : unbalancedTargets) highlights[id] = RED;
+                    for (int id : unbalancedSelected) highlights[id] = BLUE;
+                }
                 if (isDeleteLevel() && !deleteCompleted) {
                     BSTNode* target = tree.search(deleteTarget);
                     if (target) highlights[target->id] = GOLD;
@@ -1660,8 +2065,25 @@ int main() {
                     BSTNode* pivot = tree.search(30);
                     if (pivot) highlights[pivot->id] = GOLD;
                 }
+                if(animation.currentIndex()>=0&&animation.currentIndex()<(int)eventLog.size()){
+                    int eventNode=eventLog.at(animation.currentIndex()).nodeId;
+                    if(eventNode>=0)highlights[eventNode]=ORANGE;
+                }
                 if (!isReconstructionLevel() || reconstructionComplete) {
-                    renderer.drawTree(tree.getRoot(), layout, highlights, canvas, cameraZoom, cameraPan);
+                    TreeNode* visibleRoot = animation.currentIndex() >= 0 &&
+                        animation.currentIndex() < (int)eventLog.size()
+                        ? replayTree.getRoot() : tree.getRoot();
+                    LayoutEngine& visibleLayout = visibleRoot == replayTree.getRoot()
+                        ? replayLayout : layout;
+                    renderer.drawTree(visibleRoot, visibleLayout, highlights, canvas, cameraZoom, cameraPan);
+                    if (isBalanceLevel()) {
+                        for (int id : unbalancedTargets) {
+                            auto posIt = layout.positions.find(id);
+                            if (posIt == layout.positions.end()) continue;
+                            Vector2 badge = toScreen(posIt->second);
+                            DrawText("!", (int)badge.x - 5, (int)badge.y - 10, 20, MAROON);
+                        }
+                    }
                 } else {
                     DrawText("Reconstruct the root from the two traversal clues above.",
                              canvasX + 35, canvasY + 30, 20, DARKGRAY);

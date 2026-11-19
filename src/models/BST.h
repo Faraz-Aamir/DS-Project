@@ -37,6 +37,18 @@ public:
         return nullptr;
     }
 
+    BSTNode* lcaBST(int keyA, int keyB) {
+        if (!search(keyA) || !search(keyB)) return nullptr;
+        TreeNode* node = root;
+        while (node) {
+            int key = ((BSTNode*)node)->key;
+            if (keyA < key && keyB < key) node = node->left;
+            else if (keyA > key && keyB > key) node = node->right;
+            else return (BSTNode*)node;
+        }
+        return nullptr;
+    }
+
     virtual bool remove(int key) {
         bool deleted = false;
         root = deleteHelper(root, key, deleted);

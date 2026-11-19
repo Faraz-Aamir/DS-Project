@@ -230,6 +230,18 @@ vector<int> BinaryTree::pathTo(int targetId) {
     return path;
 }
 
+vector<Event> BinaryTree::pathToWithEvents(int targetId) {
+    vector<Event> events;
+    if (!eventRecordingEnabled) return events;
+    for (int id : pathTo(targetId)) {
+        Event event{};
+        event.type = EventType::PATH_TO;
+        event.nodeId = id;
+        events.push_back(event);
+    }
+    return events;
+}
+
 bool BinaryTree::pathToHelper(TreeNode* node, int targetId, vector<int>& path) {
     if (!node) return false;
     path.push_back(node->id);
@@ -247,8 +259,8 @@ vector<Event> BinaryTree::mirror() {
     vector<Event> events;
     mirrorHelper(root);
     // Emit a MIRROR event for the root
-    if (root) {
-        Event e;
+    if (eventRecordingEnabled && root) {
+        Event e{};
         e.type = EventType::MIRROR;
         e.nodeId = root->id;
         e.oldHeight = heightHelper(root);

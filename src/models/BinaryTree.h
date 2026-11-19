@@ -18,7 +18,10 @@ using namespace std;
 
 // Event types define what happened during a tree operation
 enum class EventType {
-    VISIT, COMPARE, INSERT, UNLINK, SWAP_VALUE, ROTATE, MIRROR, PATH_TO
+    VISIT, COMPARE, INSERT, UNLINK, SWAP_VALUE, ROTATE, MIRROR, PATH_TO,
+    HIGHLIGHT_SUBTREE, BALANCE_ALERT, UPDATE_HEIGHT, UPDATE_SIZE,
+    HEAP_BUILD, HEAP_SWAP, HEAPIFY_START, HEAPIFY_DONE, EXTRACT_MAX,
+    MARK_SORTED, HEAP_SIZE_CHANGE, HEAP_SORT_COMPLETE, UNDO, ANSWER
 };
 
 // Event stores all data needed for undo/replay/animation
@@ -37,6 +40,7 @@ struct Event {
 
 class BinaryTree {
 public:
+    inline static bool eventRecordingEnabled = true;
     TreeNode* root;
     int nodeCount;
 
@@ -65,6 +69,7 @@ public:
     TreeNode* lca(int idA, int idB);
     vector<int> pathTo(int targetId);
     vector<Event> pathToWithEvents(int targetId);
+    static void setEventRecordingEnabled(bool enabled) { eventRecordingEnabled = enabled; }
 
     // === MIRROR ===
     vector<Event> mirror();
