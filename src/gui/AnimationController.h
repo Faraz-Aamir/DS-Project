@@ -12,18 +12,21 @@ public:
     void setSpeed(float value) { speed = std::max(0.25f, std::min(4.0f, value)); }
     bool isPlaying() const { return playing; }
     int currentIndex() const { return index; }
+    float transitionProgress() const {
+        return playing ? std::max(0.0f, std::min(1.0f, (float)(elapsed / 0.45))) : 1.0f;
+    }
 
     void seek(int target, int eventCount) {
         playing = false;
         index = eventCount <= 0 ? -1 : std::max(0, std::min(eventCount - 1, target));
-        elapsed = 0.0;
+        elapsed = 0.45;
     }
 
     void step(int direction, int eventCount) {
         playing = false;
         if (eventCount <= 0) { index = -1; return; }
         index = std::max(0, std::min(eventCount - 1, index + direction));
-        elapsed = 0.0;
+        elapsed = 0.45;
     }
 
     void update(double deltaSeconds, int eventCount) {

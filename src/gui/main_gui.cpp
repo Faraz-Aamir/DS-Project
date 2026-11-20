@@ -1,5 +1,6 @@
 #include "raylib.h"
 #include "../models/BST.h"
+#include "../models/AVLTree.h"
 #include "../models/MaxHeap.h"
 #include "LayoutEngine.h"
 #include "Renderer.h"
@@ -11,6 +12,7 @@
 #include "AnimationController.h"
 #include "SaveManager.h"
 #include "UIManager.h"
+#include "Theme.h"
 #include <string>
 #include <sstream>
 #include <vector>
@@ -39,6 +41,20 @@ static void collectKeys(TreeNode* n, std::vector<int>& out) {
     collectKeys(n->right, out);
 }
 
+static void collectPostorderKeys(TreeNode* n, std::vector<int>& out) {
+    if (!n) return;
+    collectPostorderKeys(n->left, out);
+    collectPostorderKeys(n->right, out);
+    out.push_back(n->value);
+}
+
+static void collectPreorderValues(TreeNode* n, std::vector<int>& out) {
+    if (!n) return;
+    out.push_back(n->value);
+    collectPreorderValues(n->left, out);
+    collectPreorderValues(n->right, out);
+}
+
 static void collectInorderKeys(TreeNode* n, std::vector<int>& out) {
     if (!n) return;
     collectInorderKeys(n->left, out);
@@ -51,6 +67,12 @@ static void collectPreorderIds(TreeNode* n, std::vector<int>& out) {
     out.push_back(n->id);
     collectPreorderIds(n->left, out);
     collectPreorderIds(n->right, out);
+}
+static void collectPostorderIds(TreeNode* n, std::vector<int>& out) {
+    if (!n) return;
+    collectPostorderIds(n->left, out);
+    collectPostorderIds(n->right, out);
+    out.push_back(n->id);
 }
 
 static void collectInternalIds(TreeNode* n, std::vector<int>& out) {
@@ -121,6 +143,67 @@ static TreeNode* findNodeById(TreeNode* n, int id) {
     if (!n || n->id == id) return n;
     TreeNode* found = findNodeById(n->left, id);
     return found ? found : findNodeById(n->right, id);
+}
+
+static TreeNode* findTreeNodeByValue(TreeNode* root, int value) {
+    if (!root) return nullptr;
+    std::vector<TreeNode*> pending{root};
+    for (size_t i = 0; i < pending.size(); ++i) {
+        TreeNode* node = pending[i];
+        if (node->value == value) return node;
+        if (node->left) pending.push_back(node->left);
+        if (node->right) pending.push_back(node->right);
+    }
+    return nullptr;
+}
+
+static bool insertCompleteBinary(BinaryTree& tree, int value, int& nextId) {
+    TreeNode* added = new TreeNode(nextId++, value);
+    if (!tree.root) {
+        tree.root = added;
+    } else {
+        std::vector<TreeNode*> pending{tree.root};
+        bool inserted = false;
+        for (size_t i = 0; i < pending.size() && !inserted; ++i) {
+            TreeNode* node = pending[i];
+            if (!node->left) {
+                node->left = added;
+                added->parent = node;
+                inserted = true;
+            } else if (!node->right) {
+                node->right = added;
+                added->parent = node;
+                inserted = true;
+            } else {
+                pending.push_back(node->left);
+                pending.push_back(node->right);
+            }
+        }
+    }
+    ++tree.nodeCount;
+    return true;
+}
+
+static bool removeCompleteBinary(BinaryTree& tree, int value) {
+    if (!tree.root) return false;
+    std::vector<TreeNode*> pending{tree.root};
+    TreeNode* target = nullptr;
+    TreeNode* last = nullptr;
+    for (size_t i = 0; i < pending.size(); ++i) {
+        TreeNode* node = pending[i];
+        if (!target && node->value == value) target = node;
+        last = node;
+        if (node->left) pending.push_back(node->left);
+        if (node->right) pending.push_back(node->right);
+    }
+    if (!target || !last) return false;
+    target->value = last->value;
+    if (!last->parent) tree.root = nullptr;
+    else if (last->parent->left == last) last->parent->left = nullptr;
+    else last->parent->right = nullptr;
+    delete last;
+    --tree.nodeCount;
+    return true;
 }
 
 static void clearNodes(TreeNode* n) {
@@ -213,6 +296,9 @@ static TreeNode* deserializeTree(const std::string& data, int& nodeCount) {
     std::istringstream input(data);
     int nextId = 1;
     TreeNode* root = deserializeNode(input, nullptr, nextId);
+    // Keep snapshot IDs aligned with the live tree, which is numbered in-order.
+    nextId = 1;
+    renumberNodes(root, nextId);
     nodeCount = nextId - 1;
     return root;
 }
@@ -259,7 +345,11 @@ int main() {
     }
 
     BST tree;
+    BinaryTree reconstructionTemplate;
+    LayoutEngine reconstructionLayout;
     BST sandboxTree;
+    AVLTree sandboxAVL;
+    BinaryTree sandboxBinaryTree;
     BST endlessTree;
     MaxHeap sandboxHeap;
     LayoutEngine sandboxLayout;
@@ -269,16 +359,20 @@ int main() {
     eventLog.attach(eventBus);
     AnimationController animation;
     BinaryTree replayTree;
+    BinaryTree replayPreviousTree;
     LayoutEngine replayLayout;
+    LayoutEngine replayPreviousLayout;
     AppScreen screen = AppScreen::MainMenu;
-    bool menuDarkTheme = false;
+    bool menuDarkTheme = true;
     bool quitRequested = false;
     int targetFps = 60;
     std::string screenMessage;
     std::string sandboxInput;
     int sandboxOperation = 0;
     int sandboxQuery = 50;
-    bool sandboxHeapMode = false;
+    int sandboxMode = 1;
+    int sandboxNextId = 1;
+    std::mt19937 sandboxRandom((unsigned int)GetTime() + 2069U);
     std::mt19937 endlessRandom((unsigned int)GetTime() + 20261119U);
     int endlessScore = 0;
     int endlessLives = 3;
@@ -293,12 +387,25 @@ int main() {
     std::vector<int> patrolVisited;
     std::vector<int> preorderClue;
     std::vector<int> inorderClue;
+    bool reconstructionUsePostorder = false;
     bool reconstructionComplete = false;
+    std::vector<int> reconstructionSlots;
+    std::vector<bool> reconstructionSlotFilled;
+    std::vector<int> reconstructionTokens;
+    std::vector<bool> reconstructionTokenUsed;
+    std::vector<int> reconstructionPlacementOrder;
+    int draggedReconstructionToken = -1;
     int heightTarget = 0;
     int diameterTarget = 0;
     int heightDiameterStep = 0;
+    std::vector<int> heightNodeOrder;
+    std::vector<int> heightVisited;
+    int heightSelectedNodeId = -1;
     std::vector<int> lcaSelected;
     int lcaExpectedId = -1;
+    bool lcaPathPhase = false;
+    std::vector<int> lcaPathExpected;
+    std::vector<int> lcaPathVisited;
     bool lcaComplete = false;
     std::vector<int> mirrorTargets;
     std::vector<int> mirrorFlipped;
@@ -331,6 +438,8 @@ int main() {
     int starsEarned = 0;
     int starCap = 3;
     bool alarmFailed = false;
+    Sound alarmSound{};
+    bool alarmSoundReady = false;
     std::string lastCountedError;
     const std::string progressPath = std::string(GetApplicationDirectory()) + "data/progress.txt";
     std::unordered_set<std::string> validLevelIds;
@@ -457,7 +566,7 @@ int main() {
         const std::string& id = loader.acts[actIdx].levels[levelIdx].id;
         if (id == "1.1") return patrolVisited.size() == patrolOrder.size() && !patrolOrder.empty();
         if (id == "1.2") return reconstructionComplete;
-        if (id == "1.3") return heightDiameterStep >= 2;
+        if (id == "1.3") return heightDiameterStep >= (int)heightNodeOrder.size() + 1;
         if (id == "1.4") return lcaComplete;
         if (id == "1.5") return !mirrorTargets.empty() && mirrorFlipped.size() == mirrorTargets.size();
         if (id == "2.1" || id == "2.5") return !searchPath.empty() && searchVisited.size() == searchPath.size();
@@ -476,8 +585,8 @@ int main() {
         const std::string& id = loader.acts[actIdx].levels[levelIdx].id;
         if (id == "1.1") return (int)patrolOrder.size();
         if (id == "1.2" || id == "2.2" || id == "2.3" || id == "3.2" || id == "3.4" || id == "3.5" || id == "4.1" || id == "4.2") return 1;
-        if (id == "1.3") return 2;
-        if (id == "1.4") return 3;
+        if (id == "1.3") return 2 * (int)heightNodeOrder.size() + 1;
+        if (id == "1.4") return tree.diameter() + 5;
         if (id == "1.5") return std::max(1, (int)mirrorTargets.size());
         if (id == "2.1" || id == "2.5") return std::max(1, (int)searchPath.size());
         if (id == "2.4") return std::max(1, (int)rangeExpected.size());
@@ -488,7 +597,7 @@ int main() {
         return std::max(1, (int)currentLevelKeys.size());
     };
     auto isGuidedLevel = [&]() {
-        return isPatrolLevel() || isSearchLevel() || isLcaLevel() || isMirrorLevel() ||
+        return isPatrolLevel() || isSearchLevel() || isLcaLevel() || isHeightDiameterLevel() || isMirrorLevel() ||
                isRangeLevel() || isDegenerationLevel() || isBalanceLevel() || isOrderStatisticLevel();
     };
     auto isInsertLevel = [&]() {
@@ -588,9 +697,24 @@ int main() {
         preorderClue.clear();
         inorderClue.clear();
         reconstructionComplete = false;
+        clearNodes(reconstructionTemplate.root);
+        reconstructionTemplate.root = nullptr;
+        reconstructionTemplate.nodeCount = 0;
+        reconstructionSlots.clear();
+        reconstructionSlotFilled.clear();
+        reconstructionTokens.clear();
+        reconstructionTokenUsed.clear();
+        reconstructionPlacementOrder.clear();
+        draggedReconstructionToken = -1;
         heightDiameterStep = 0;
+        heightNodeOrder.clear();
+        heightVisited.clear();
+        heightSelectedNodeId = -1;
         lcaSelected.clear();
         lcaExpectedId = -1;
+        lcaPathPhase = false;
+        lcaPathExpected.clear();
+        lcaPathVisited.clear();
         lcaComplete = false;
         mirrorTargets.clear();
         mirrorFlipped.clear();
@@ -631,10 +755,18 @@ int main() {
         if (isReconstructionLevel()) {
             collectKeys(tree.getRoot(), preorderClue);
             collectInorderKeys(tree.getRoot(), inorderClue);
+            reconstructionTemplate.root = reconstructionTemplate.buildFromPreIn(preorderClue, inorderClue);
+            reconstructionTemplate.nodeCount = (int)preorderClue.size();
+            collectPreorderValues(reconstructionTemplate.root, reconstructionSlots);
+            reconstructionSlotFilled.assign(reconstructionSlots.size(), false);
+            if (reconstructionUsePostorder) collectPostorderKeys(tree.getRoot(), reconstructionTokens);
+            else reconstructionTokens = preorderClue;
+            reconstructionTokenUsed.assign(reconstructionTokens.size(), false);
         }
         if (isHeightDiameterLevel()) {
             heightTarget = tree.height();
             diameterTarget = tree.diameter();
+            collectPostorderIds(tree.getRoot(), heightNodeOrder);
         }
         if (isOrderStatisticLevel() && currentLevelKeys.size() >= (size_t)orderStatisticK) {
             std::vector<int> sortedKeys = currentLevelKeys;
@@ -653,6 +785,17 @@ int main() {
     const int WIN_W = 1100, WIN_H = 850;
     InitWindow(WIN_W, WIN_H, "Vault Heist");
     SetTargetFPS(60);
+    InitAudioDevice();
+    if (IsAudioDeviceReady()) {
+        std::string alarmPath = std::string(GetApplicationDirectory()) + "assets/Alarm.mp3";
+        if (!FileExists(alarmPath.c_str())) alarmPath = "assets/Alarm.mp3";
+        alarmSound = LoadSound(alarmPath.c_str());
+        alarmSoundReady = alarmSound.stream.buffer != nullptr;
+        if (alarmSoundReady) SetSoundVolume(alarmSound, 0.8f);
+    }
+    auto stopAlarmSound = [&]() {
+        if (alarmSoundReady) StopSound(alarmSound);
+    };
 
     // ---- Layout: every row is computed from the previous row ----
     const int titleH   = 50;
@@ -675,13 +818,30 @@ int main() {
         sandboxTree.root = buildHeapView(sandboxHeap.heap, 0, nullptr, nextId);
         sandboxTree.nodeCount = nextId - 1;
     };
+    auto sandboxRoot = [&]() -> TreeNode* {
+        if (sandboxMode == 0) return sandboxBinaryTree.getRoot();
+        if (sandboxMode == 2) return sandboxAVL.getRoot();
+        return sandboxTree.getRoot();
+    };
     auto resetSandbox = [&]() {
         clearNodes(sandboxTree.root);
         sandboxTree.root = nullptr;
         sandboxTree.nodeCount = 0;
-        if (sandboxHeapMode) {
+        clearNodes(sandboxAVL.root);
+        sandboxAVL.root = nullptr;
+        sandboxAVL.nodeCount = 0;
+        clearNodes(sandboxBinaryTree.root);
+        sandboxBinaryTree.root = nullptr;
+        sandboxBinaryTree.nodeCount = 0;
+        sandboxNextId = 1;
+        if (sandboxMode == 3) {
             sandboxHeap.heap = {12, 7, 10, 3, 5, 8};
             refreshSandboxHeap();
+        } else if (sandboxMode == 0) {
+            for (int value : {50, 30, 70, 20, 40, 60, 80})
+                insertCompleteBinary(sandboxBinaryTree, value, sandboxNextId);
+        } else if (sandboxMode == 2) {
+            for (int value : {50, 30, 70, 20, 40, 60, 80}) sandboxAVL.insert(value);
         } else {
             for (int value : {50, 30, 70, 20, 40, 60, 80}) sandboxTree.insert(value);
         }
@@ -692,7 +852,7 @@ int main() {
     auto runSandboxOperation = [&](int operation) {
         if (sandboxInput.empty()) { screenMessage = "Enter a key first."; return; }
         sandboxQuery = std::stoi(sandboxInput);
-        if (sandboxHeapMode) {
+        if (sandboxMode == 3) {
             if (operation == 0) { sandboxHeap.insert(sandboxQuery); screenMessage = "Inserted into heap."; }
             else if (operation == 1) { sandboxHeap.buildMaxHeap(sandboxHeap.heap); screenMessage = "Max Heap built."; }
             else if (operation == 2 && !sandboxHeap.heap.empty())
@@ -700,6 +860,31 @@ int main() {
             else if (operation == 3) { sandboxHeap.heapSort(); screenMessage = "Heap Sort complete."; }
             else screenMessage = "Heap has no maximum to extract.";
             refreshSandboxHeap();
+            return;
+        }
+        if (sandboxMode == 0) {
+            if (operation == 0) screenMessage = insertCompleteBinary(sandboxBinaryTree, sandboxQuery, sandboxNextId)
+                ? "Key added to the next open room." : "Could not add the key.";
+            else if (operation == 1) screenMessage = removeCompleteBinary(sandboxBinaryTree, sandboxQuery)
+                ? "Room removed; deepest value moved into its place." : "Key not found.";
+            else if (operation == 2) screenMessage = findTreeNodeByValue(sandboxBinaryTree.getRoot(), sandboxQuery)
+                ? "Key found in the binary tree." : "Key not found.";
+            return;
+        }
+        if (sandboxMode == 2) {
+            if (operation == 0) screenMessage = sandboxAVL.insert(sandboxQuery)
+                ? "Key inserted; AVL balance maintained." : "Duplicate key rejected.";
+            else if (operation == 1) screenMessage = sandboxAVL.remove(sandboxQuery)
+                ? "Key deleted; AVL balance maintained." : "Key not found.";
+            else if (operation == 2) screenMessage = sandboxAVL.search(sandboxQuery)
+                ? "Key found in the AVL tree." : "Key not found.";
+            else if (operation == 3) {
+                std::vector<int> values = sandboxAVL.rangeQuery(sandboxQuery - 10, sandboxQuery + 10);
+                screenMessage = "Range [key-10, key+10]: ";
+                for (int value : values) screenMessage += std::to_string(value) + " ";
+            } else if (operation == 4) {
+                screenMessage = "5th smallest: " + std::to_string(sandboxAVL.kth(5));
+            }
             return;
         }
         if (operation == 0) screenMessage = sandboxTree.insert(sandboxQuery) ? "Key inserted." : "Duplicate key rejected.";
@@ -720,6 +905,36 @@ int main() {
             screenMessage = rotateRightAt(sandboxTree, sandboxQuery) ? "Right rotation applied." : "No left child at that key.";
         }
     };
+    auto randomizeSandbox = [&]() {
+        std::vector<int> values;
+        std::uniform_int_distribution<int> distribution(10, 99);
+        while (values.size() < 12) {
+            int value = distribution(sandboxRandom);
+            if (std::find(values.begin(), values.end(), value) == values.end()) values.push_back(value);
+        }
+        resetSandbox();
+        clearNodes(sandboxTree.root);
+        sandboxTree.root = nullptr;
+        sandboxTree.nodeCount = 0;
+        if (sandboxMode == 3) {
+            sandboxHeap.heap = values;
+            refreshSandboxHeap();
+        } else if (sandboxMode == 0) {
+            clearNodes(sandboxBinaryTree.root);
+            sandboxBinaryTree.root = nullptr;
+            sandboxBinaryTree.nodeCount = 0;
+            sandboxNextId = 1;
+            for (int value : values) insertCompleteBinary(sandboxBinaryTree, value, sandboxNextId);
+        } else if (sandboxMode == 2) {
+            clearNodes(sandboxAVL.root);
+            sandboxAVL.root = nullptr;
+            sandboxAVL.nodeCount = 0;
+            for (int value : values) sandboxAVL.insert(value);
+        } else {
+            for (int value : values) sandboxTree.insert(value);
+        }
+        screenMessage = "Generated 12 random keys for the selected structure.";
+    };
     float cameraZoom = 1.0f;
     Vector2 cameraPan = {0, 0};
     Vector2 previousMouse = {0, 0};
@@ -738,6 +953,28 @@ int main() {
         event.type = type;
         event.nodeId = nodeId;
         event.otherNodeId = otherNodeId;
+        const char* action = "Updated the tree";
+        switch (type) {
+            case EventType::VISIT: action = "Visited a room"; break;
+            case EventType::COMPARE: action = "Compared a key"; break;
+            case EventType::INSERT: action = "Inserted a value"; break;
+            case EventType::UNLINK: action = "Removed a link"; break;
+            case EventType::ROTATE: action = "Rotated the tree"; break;
+            case EventType::MIRROR: action = "Mirrored the tree"; break;
+            case EventType::PATH_TO: action = "Traced a route"; break;
+            case EventType::HEAP_BUILD: action = "Built the max heap"; break;
+            case EventType::HEAP_SWAP: action = "Swapped heap entries"; break;
+            case EventType::EXTRACT_MAX: action = "Extracted the maximum"; break;
+            case EventType::MARK_SORTED: action = "Placed value in sorted order"; break;
+            case EventType::UNDO: action = "Undid the previous action"; break;
+            case EventType::ANSWER: action = "Submitted an answer"; break;
+            default: break;
+        }
+        event.detail = action;
+        if (nodeId >= 0) {
+            TreeNode* subject = findNodeById(tree.getRoot(), nodeId);
+            if (subject) event.detail += ": " + std::to_string(subject->value);
+        }
         eventBus.publish(event, serializeTree(tree.getRoot()));
         animation.seek((int)eventLog.size() - 1, (int)eventLog.size());
     };
@@ -749,6 +986,7 @@ int main() {
         if (alarmSteps >= alarmCapacity) {
             alarmSteps = alarmCapacity;
             alarmFailed = true;
+            if (alarmSoundReady) PlaySound(alarmSound);
             stat = "Alarm full. Reset this level to try again.";
             statC = ERR_C;
         }
@@ -907,6 +1145,15 @@ int main() {
                 lcaComplete = false;
                 changed = true;
                 stat = "LCA answer cleared."; statC = OK_C;
+            } else if (!lcaPathVisited.empty()) {
+                lcaPathVisited.pop_back();
+                changed = true;
+                stat = "Last path room undone."; statC = OK_C;
+            } else if (lcaPathPhase) {
+                lcaPathPhase = false;
+                lcaPathExpected.clear();
+                changed = true;
+                stat = "Path tracing undone. Select the LCA again."; statC = OK_C;
             } else if (!lcaSelected.empty()) {
                 lcaSelected.pop_back();
                 changed = true;
@@ -922,19 +1169,33 @@ int main() {
             return;
         }
         if (isHeightDiameterLevel()) {
-            if (heightDiameterStep > 0) { --heightDiameterStep; recordEvent(EventType::UNDO); }
+            if (heightSelectedNodeId >= 0) {
+                heightSelectedNodeId = -1;
+            } else if (heightDiameterStep > 0) {
+                if (heightDiameterStep <= (int)heightNodeOrder.size() && !heightVisited.empty()) {
+                    heightVisited.pop_back();
+                }
+                --heightDiameterStep;
+                recordEvent(EventType::UNDO);
+            }
             insB[0] = '\0'; iL = 0;
             stat = "Last answer undone."; statC = OK_C;
             return;
         }
         if (isReconstructionLevel()) {
-            if (reconstructionComplete) {
+            if (!reconstructionPlacementOrder.empty()) {
+                int slot = reconstructionPlacementOrder.back();
+                reconstructionPlacementOrder.pop_back();
+                reconstructionSlotFilled[(size_t)slot] = false;
+                int value = reconstructionSlots[(size_t)slot];
+                for (size_t i = 0; i < reconstructionTokens.size(); ++i) {
+                    if (reconstructionTokens[i] == value) reconstructionTokenUsed[i] = false;
+                }
                 reconstructionComplete = false;
-                insB[0] = '\0'; iL = 0;
                 recordEvent(EventType::UNDO);
-                stat = "Reconstruction answer undone."; statC = OK_C;
+                stat = "Last placed room undone."; statC = OK_C;
             } else {
-                stat = "No reconstruction answer to undo."; statC = ERR_C;
+                stat = "No placed rooms to undo."; statC = ERR_C;
             }
             return;
         }
@@ -971,6 +1232,7 @@ int main() {
     };
 
     auto doReset = [&]() {
+        stopAlarmSound();
         eventLog.clear();
         animation.stop();
         undoStack.clear();
@@ -1292,32 +1554,6 @@ int main() {
         return result;
     };
 
-    auto checkReconstructionRoot = [&]() {
-        if (alarmFailed) return;
-        chargeAlarm();
-        if (alarmFailed) return;
-        if (iL == 0 || preorderClue.empty()) {
-            stat = "Enter a root value first."; statC = ERR_C;
-            return;
-        }
-        int answer = std::stoi(insB);
-        recordEvent(EventType::ANSWER);
-        if (answer != preorderClue.front()) {
-            stat = "Not the root. Use the traversal clues and try again."; statC = ERR_C;
-            return;
-        }
-
-        BinaryTree rebuilt;
-        rebuilt.root = rebuilt.buildFromPreIn(preorderClue, inorderClue);
-        rebuilt.nodeCount = (int)preorderClue.size();
-        if (rebuilt.preorder() == preorderClue && rebuilt.inorder() == inorderClue) {
-            reconstructionComplete = true;
-            stat = "Blueprint decoded. The tree is reconstructed."; statC = OK_C;
-        } else {
-            stat = "Those clues do not form a valid blueprint."; statC = ERR_C;
-        }
-    };
-
     auto checkHeightDiameterAnswer = [&]() {
         if (alarmFailed) return;
         chargeAlarm();
@@ -1326,25 +1562,56 @@ int main() {
             stat = "Enter a number first."; statC = ERR_C;
             return;
         }
-        if (heightDiameterStep >= 2) {
-            stat = "Both measurements are correct. Reset to try again."; statC = OK_C;
+        if (heightDiameterStep > (int)heightNodeOrder.size()) {
+            stat = "All room heights and the diameter are correct."; statC = OK_C;
             return;
         }
         int answer = std::stoi(insB);
         recordEvent(EventType::ANSWER);
-        int expected = heightDiameterStep == 0 ? heightTarget : diameterTarget;
+        bool answeringRoomHeight = heightDiameterStep < (int)heightNodeOrder.size();
+        if (answeringRoomHeight && heightSelectedNodeId < 0) {
+            stat = "Select the room whose height you entered."; statC = ERR_C;
+            return;
+        }
+        TreeNode* selectedHeightNode = answeringRoomHeight
+            ? findNodeById(tree.getRoot(), heightSelectedNodeId) : nullptr;
+        int expected = answeringRoomHeight ? subtreeHeight(selectedHeightNode) : diameterTarget;
         if (answer != expected) {
-            stat = heightDiameterStep == 0 ? "That height is not correct. Count edges from root to deepest leaf."
-                                           : "That diameter is not correct. Find the longest path in edges.";
+            stat = answeringRoomHeight ? "That room height is not correct. Count edges to its deepest leaf."
+                                       : "That diameter is not correct. Find the longest path in edges.";
             statC = ERR_C;
             return;
         }
+        if (answeringRoomHeight) {
+            heightVisited.push_back(heightSelectedNodeId);
+            heightSelectedNodeId = -1;
+        }
         ++heightDiameterStep;
         insB[0] = '\0'; iL = 0;
-        if (heightDiameterStep == 2) {
-            stat = "Height and diameter correct. Level complete."; statC = OK_C;
+        if (heightDiameterStep == (int)heightNodeOrder.size()) {
+            stat = "Every room height is correct. Now enter the tree diameter."; statC = OK_C;
+        } else if (heightDiameterStep > (int)heightNodeOrder.size()) {
+            stat = "Room heights and diameter correct. Level complete."; statC = OK_C;
         } else {
-            stat = "Correct height. Now enter the diameter in edges."; statC = OK_C;
+            stat = "Correct room height. Select the next room and enter its height."; statC = OK_C;
+        }
+    };
+
+    auto checkLcaPathLength = [&]() {
+        if (alarmFailed || !lcaPathPhase || lcaPathVisited.size() != lcaPathExpected.size()) return;
+        chargeAlarm();
+        if (alarmFailed || iL == 0) {
+            if (!alarmFailed) { stat = "Enter the traced path length."; statC = ERR_C; }
+            return;
+        }
+        int answer = std::stoi(insB);
+        recordEvent(EventType::ANSWER);
+        int expectedLength = (int)lcaPathExpected.size() - 1;
+        if (answer == expectedLength) {
+            lcaComplete = true;
+            stat = "Correct LCA path and length. Level complete."; statC = OK_C;
+        } else {
+            stat = "That path length is not correct. Count the edges between the rooms."; statC = ERR_C;
         }
     };
 
@@ -1361,11 +1628,14 @@ int main() {
 
     double lastStateSave = GetTime();
     while (!WindowShouldClose()) {
+        Theme::setDark(menuDarkTheme);
         if (screen != AppScreen::Gameplay) {
             Vector2 mouse = GetMousePosition();
-            Color background = menuDarkTheme ? Color{24,30,42,255} : Color{245,247,250,255};
-            if (IsKeyPressed(KEY_ESCAPE)) screen = screen == AppScreen::Result ? AppScreen::CampaignMap : AppScreen::MainMenu;
-            BeginDrawing(); ClearBackground(background);
+            if (IsKeyPressed(KEY_ESCAPE)) {
+                if (screen == AppScreen::Result) stopAlarmSound();
+                screen = screen == AppScreen::Result ? AppScreen::CampaignMap : AppScreen::MainMenu;
+            }
+            BeginDrawing(); Theme::drawBackground(WIN_W, WIN_H);
             if (screen == AppScreen::MainMenu) {
                 UIManager::title("VAULT HEIST");
                 DrawText("Choose a way into the vault", 375, 108, 22, menuDarkTheme ? RAYWHITE : DARKGRAY);
@@ -1375,7 +1645,7 @@ int main() {
                 for (int i=0;i<6;++i) if (UIManager::button({390,145.0f+i*78.0f,320,58},labels[i],mouse)) {
                     if (i==0) screen=destinations[i];
                     else if (i==1) startEndless();
-                    else if (i==2) { sandboxHeapMode=false; resetSandbox(); screen=AppScreen::Sandbox; }
+                    else if (i==2) { sandboxMode=1; resetSandbox(); screen=AppScreen::Sandbox; }
                     else if (i==3 || i==4) screen=destinations[i];
                     else quitRequested=true;
                 }
@@ -1384,7 +1654,7 @@ int main() {
                 UIManager::title("CAMPAIGN MAP");
                 for(int a=0;a<(int)loader.acts.size();++a){
                     float y=105.0f+a*168.0f;
-                    DrawText(("Act "+std::to_string(loader.acts[a].act)+": "+loader.acts[a].title).c_str(),28,(int)y,19,menuDarkTheme?RAYWHITE:DARKBLUE);
+                    DrawText(("Act "+std::to_string(loader.acts[a].act)+": "+loader.acts[a].title).c_str(),28,(int)y,19,Theme::cyan());
                     for(int l=0;l<(int)loader.acts[a].levels.size();++l){
                         const Level& level=loader.acts[a].levels[l]; bool unlocked=levelManager.unlocked(a,l,completedLevels);
                         int stars=bestStars.count(level.id)?bestStars[level.id]:0;
@@ -1393,7 +1663,7 @@ int main() {
                         if(unlocked){
                             if(UIManager::button(node,label,mouse)){actIdx=a;levelIdx=l;levelManager.actIndex=a;levelManager.levelIndex=l;resetToLevel();undoStack.clear();heapUndoStack.clear();relayout();screen=AppScreen::LevelBriefing;}
                             DrawText(level.name.c_str(),(int)node.x+5,(int)node.y+65,13,menuDarkTheme?RAYWHITE:DARKGRAY);
-                        }else{DrawRectangleRec(node,Color{205,208,214,255});DrawRectangleLinesEx(node,1,GRAY);DrawText("LOCKED",(int)node.x+12,(int)node.y+28,17,DARKGRAY);}
+                        }else{DrawRectangleRec(node,Theme::panel());DrawRectangleLinesEx(node,1,Theme::border());DrawText("LOCKED",(int)node.x+12,(int)node.y+28,17,Theme::muted());}
                     }
                 }
                 if(UIManager::button({28,790,150,42},"Main Menu",mouse))screen=AppScreen::MainMenu;
@@ -1401,7 +1671,7 @@ int main() {
                 const Level& level=loader.acts[actIdx].levels[levelIdx];
                 UIManager::title("LEVEL BRIEFING");
                 DrawText(("Act "+std::to_string(loader.acts[actIdx].act)+": "+loader.acts[actIdx].title).c_str(),300,165,22,menuDarkTheme?RAYWHITE:DARKGRAY);
-                DrawText((level.id+": "+level.name).c_str(),300,215,28,DARKBLUE);
+                DrawText((level.id+": "+level.name).c_str(),300,215,28,Theme::cyan());
                 DrawText(("Challenge type: "+level.type).c_str(),300,265,21,menuDarkTheme?RAYWHITE:DARKGRAY);
                 DrawText(("Rooms/elements: "+std::to_string(level.nodes>0?level.nodes:level.elements)).c_str(),300,305,21,menuDarkTheme?RAYWHITE:DARKGRAY);
                 DrawText("Complete the objective before the alarm fills.",300,350,21,menuDarkTheme?RAYWHITE:DARKGRAY);
@@ -1413,14 +1683,22 @@ int main() {
                 DrawText(failed?"Alarm reached capacity":"Vault challenge complete",260,170,28,failed?MAROON:DARKGREEN);
                 DrawText(("Alarm steps: "+std::to_string(alarmSteps)+" / "+std::to_string(alarmCapacity)).c_str(),330,225,22,menuDarkTheme?RAYWHITE:DARKGRAY);
                 DrawText(("Score: "+std::to_string(ScoreSystem::score(alarmSteps,scorePenalties))+"    Stars: "+std::string(starsEarned,'*')+std::string(3-starsEarned,'-')).c_str(),330,265,22,menuDarkTheme?RAYWHITE:DARKGRAY);
-                if(UIManager::button({170,370,190,56},"Retry",mouse)){resetToLevel();undoStack.clear();heapUndoStack.clear();relayout();screen=AppScreen::Gameplay;}
+                if (!failed && actIdx == 3 && (levelIdx == 3 || levelIdx == 4)) {
+                    std::string sorted = "Sorted array: ";
+                    for (int value : heapState.heap) sorted += std::to_string(value) + "  ";
+                    DrawText(sorted.c_str(), 230, 315, 18, Theme::cyan());
+                    if (levelIdx == 4)
+                        DrawText("Achievement: FINAL VAULT UNLOCKED", 330, 345, 20, GOLD);
+                }
+                if(UIManager::button({170,370,190,56},"Retry",mouse)){stopAlarmSound();resetToLevel();undoStack.clear();heapUndoStack.clear();relayout();stat="Level restarted.";statC=OK_C;screen=AppScreen::Gameplay;}
                 bool hasNext=levelIdx+1<(int)loader.acts[actIdx].levels.size()||actIdx+1<(int)loader.acts.size();
                 if(hasNext&&!failed&&UIManager::button({455,370,190,56},"Next Level",mouse)){
+                    stopAlarmSound();
                     if(levelIdx+1<(int)loader.acts[actIdx].levels.size())++levelIdx;else{++actIdx;levelIdx=0;}
                     levelManager.actIndex=actIdx;levelManager.levelIndex=levelIdx;resetToLevel();undoStack.clear();heapUndoStack.clear();relayout();screen=AppScreen::Gameplay;
                 }
-                if(UIManager::button({740,370,190,56},"Campaign Map",mouse))screen=AppScreen::CampaignMap;
-                if(UIManager::button({455,455,190,56},"Main Menu",mouse))screen=AppScreen::MainMenu;
+                if(UIManager::button({740,370,190,56},"Campaign Map",mouse)){stopAlarmSound();screen=AppScreen::CampaignMap;}
+                if(UIManager::button({455,455,190,56},"Main Menu",mouse)){stopAlarmSound();screen=AppScreen::MainMenu;}
             } else if (screen == AppScreen::Leaderboard) {
                 UIManager::title("LOCAL ENDLESS LEADERBOARD"); auto scores=saveManager.topScores();
                 if(scores.empty())DrawText("No Endless runs recorded yet.",360,150,22,menuDarkTheme?RAYWHITE:DARKGRAY);
@@ -1446,16 +1724,28 @@ int main() {
             } else if (screen == AppScreen::Sandbox) {
                 UIManager::title("SANDBOX - FREE-FORM STRUCTURE EDITOR");
                 if(UIManager::button({20,82,135,42},"Main Menu",mouse))screen=AppScreen::MainMenu;
-                if(UIManager::button({175,82,150,42},sandboxHeapMode?"Switch to BST":"Switch to Heap",mouse)){sandboxHeapMode=!sandboxHeapMode;resetSandbox();}
-                DrawText("Key:",350,94,19,menuDarkTheme?RAYWHITE:DARKGRAY);DrawRectangle(405,82,95,42,RAYWHITE);DrawRectangleLines(405,82,95,42,DARKBLUE);DrawText(sandboxInput.c_str(),415,94,20,BLACK);
-                if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT)&&CheckCollisionPointRec(mouse,{405,82,95,42}))sandboxOperation=99;
+                const char* modeNames[] = {"Binary Tree", "BST", "AVL Tree", "Max Heap"};
+                if(UIManager::button({175,82,150,42},std::string("Type: ")+modeNames[sandboxMode],mouse)){
+                    sandboxMode=(sandboxMode+1)%4; resetSandbox();
+                }
+                if(UIManager::button({335,82,125,42},"Randomize",mouse))randomizeSandbox();
+                DrawText("Key:",475,94,19,Theme::text());DrawRectangle(520,82,95,42,Theme::card());DrawRectangleLines(520,82,95,42,Theme::cyan());DrawText(sandboxInput.c_str(),530,94,20,Theme::text());
+                if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT)&&CheckCollisionPointRec(mouse,{520,82,95,42}))sandboxOperation=99;
                 if(sandboxOperation==99){if(IsKeyPressed(KEY_BACKSPACE)&&!sandboxInput.empty())sandboxInput.pop_back();int ch=GetCharPressed();while(ch>0){if(ch>='0'&&ch<='9'&&sandboxInput.size()<4)sandboxInput.push_back((char)ch);ch=GetCharPressed();}}
                 const char* treeOps[]={"Insert","Delete","Search","Range","LCA","Mirror","Rotate Left","Rotate Right","Reset"};
-                const char* heapOps[]={"Insert","Build Heap","Extract Max","Heap Sort","Reset"};int ops=sandboxHeapMode?5:9;
-                for(int i=0;i<ops;++i){int col=i%5,row=i/5;Rectangle b={20.0f+col*212.0f,142.0f+row*50.0f,195,40};if(UIManager::button(b,sandboxHeapMode?heapOps[i]:treeOps[i],mouse)){if(i==ops-1)resetSandbox();else runSandboxOperation(i);}}
+                const char* binaryOps[]={"Insert","Delete","Search","Reset"};
+                const char* avlOps[]={"Insert","Delete","Search","Range","5th Smallest","Reset"};
+                const char* heapOps[]={"Insert","Build Heap","Extract Max","Heap Sort","Reset"};
+                int ops=sandboxMode==0?4:(sandboxMode==1?9:(sandboxMode==2?6:5));
+                for(int i=0;i<ops;++i){
+                    int col=i%5,row=i/5;Rectangle b={20.0f+col*212.0f,142.0f+row*50.0f,195,40};
+                    const char* label=sandboxMode==0?binaryOps[i]:(sandboxMode==1?treeOps[i]:(sandboxMode==2?avlOps[i]:heapOps[i]));
+                    if(UIManager::button(b,label,mouse)){if(i==ops-1)resetSandbox();else runSandboxOperation(i);}
+                }
                 DrawText(screenMessage.c_str(),25,238,17,menuDarkTheme?RAYWHITE:DARKGRAY);
-                if(sandboxHeapMode){std::string values="Heap array: ";for(int v:sandboxHeap.heap)values+=std::to_string(v)+" ";DrawText(values.c_str(),25,260,18,DARKBLUE);}
-                sandboxLayout.calculateLayout(sandboxTree.root,sandboxCanvas,25,60,60);BeginScissorMode((int)sandboxCanvas.x,(int)sandboxCanvas.y,(int)sandboxCanvas.width,(int)sandboxCanvas.height);renderer.drawTree(sandboxTree.root,sandboxLayout,{},sandboxCanvas);EndScissorMode();
+                if(sandboxMode==3){std::string values="Heap array: ";for(int v:sandboxHeap.heap)values+=std::to_string(v)+" ";DrawText(values.c_str(),25,260,18,Theme::cyan());}
+                TreeNode* viewRoot=sandboxRoot();
+                sandboxLayout.calculateLayout(viewRoot,sandboxCanvas,25,60,60);BeginScissorMode((int)sandboxCanvas.x,(int)sandboxCanvas.y,(int)sandboxCanvas.width,(int)sandboxCanvas.height);renderer.drawTree(viewRoot,sandboxLayout,{},sandboxCanvas);EndScissorMode();
             }
             EndDrawing();
             if(quitRequested)break;
@@ -1472,6 +1762,19 @@ int main() {
             replayTree.root = deserializeTree(eventLog.stateAt((size_t)animation.currentIndex()),
                                               replayTree.nodeCount);
             replayLayout.calculateLayout(replayTree.getRoot(), canvas, 50, 80, 80.0f);
+            if (animation.currentIndex() > 0) {
+                clearNodes(replayPreviousTree.getRoot());
+                replayPreviousTree.root = deserializeTree(
+                    eventLog.stateAt((size_t)animation.currentIndex() - 1), replayPreviousTree.nodeCount);
+                replayPreviousLayout.calculateLayout(replayPreviousTree.getRoot(), canvas, 50, 80, 80.0f);
+                float progress = animation.transitionProgress();
+                for (auto& position : replayLayout.positions) {
+                    auto previous = replayPreviousLayout.positions.find(position.first);
+                    if (previous == replayPreviousLayout.positions.end()) continue;
+                    position.second.x = previous->second.x + (position.second.x - previous->second.x) * progress;
+                    position.second.y = previous->second.y + (position.second.y - previous->second.y) * progress;
+                }
+            }
         }
         Vector2 m = GetMousePosition();
         Rectangle timelineRect={canvas.x+canvas.width-290,canvas.y+8,260,14};
@@ -1483,12 +1786,23 @@ int main() {
             return Vector2{canvas.x + canvas.width / 2.0f + (p.x - (canvas.x + canvas.width / 2.0f)) * cameraZoom + cameraPan.x,
                            canvas.y + canvas.height / 2.0f + (p.y - (canvas.y + canvas.height / 2.0f)) * cameraZoom + cameraPan.y};
         };
+        if (isReconstructionLevel() && reconstructionTemplate.getRoot())
+            reconstructionLayout.calculateLayout(reconstructionTemplate.getRoot(), canvas, 50, 80, 80.0f);
+        auto reconstructionTokenRect = [&](int index) {
+            const float tokenWidth = 64.0f, tokenHeight = 30.0f, gap = 8.0f;
+            int columns = std::max(1, (int)((canvas.width - 20.0f) / (tokenWidth + gap)));
+            int rows = ((int)reconstructionTokens.size() + columns - 1) / columns;
+            int row = index / columns, column = index % columns;
+            float top = canvas.y + canvas.height - rows * (tokenHeight + gap) - 8.0f;
+            return Rectangle{canvas.x + 10.0f + column * (tokenWidth + gap),
+                             top + row * (tokenHeight + gap), tokenWidth, tokenHeight};
+        };
         bool inCanvas = CheckCollisionPointRec(m, canvas);
         float wheelMove = GetMouseWheelMove();
         if (inCanvas && wheelMove != 0.0f)
             cameraZoom = std::max(0.5f, std::min(2.5f, cameraZoom + wheelMove * 0.1f));
         TreeNode* hoveredNode = nullptr;
-        if (inCanvas) {
+        if (inCanvas && (!isReconstructionLevel() || reconstructionComplete)) {
             for (const auto& entry : layout.positions) {
                 Vector2 p = toScreen(entry.second);
                 float radius = entry.second.radius * cameraZoom;
@@ -1499,7 +1813,47 @@ int main() {
                 }
             }
         }
-        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && inCanvas && !hoveredNode) panning = true;
+        if (isReconstructionLevel() && !reconstructionComplete) {
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && inCanvas) {
+                for (int i = 0; i < (int)reconstructionTokens.size(); ++i) {
+                    if (!reconstructionTokenUsed[(size_t)i] &&
+                        CheckCollisionPointRec(m, reconstructionTokenRect(i))) {
+                        draggedReconstructionToken = i;
+                        break;
+                    }
+                }
+            }
+            if (draggedReconstructionToken >= 0 && IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+                chargeAlarm();
+                int targetSlot = -1;
+                float bestDistance = 42.0f * cameraZoom;
+                for (int i = 0; i < (int)reconstructionSlots.size(); ++i) {
+                    if (reconstructionSlotFilled[(size_t)i]) continue;
+                    const NodePosition& slot = reconstructionLayout.positions[reconstructionSlots[(size_t)i]];
+                    Vector2 center = toScreen(slot);
+                    float distance = std::sqrt((m.x-center.x)*(m.x-center.x) + (m.y-center.y)*(m.y-center.y));
+                    if (distance < bestDistance) { bestDistance = distance; targetSlot = i; }
+                }
+                int tokenValue = reconstructionTokens[(size_t)draggedReconstructionToken];
+                if (!alarmFailed && targetSlot >= 0 && tokenValue == reconstructionSlots[(size_t)targetSlot]) {
+                    reconstructionSlotFilled[(size_t)targetSlot] = true;
+                    reconstructionTokenUsed[(size_t)draggedReconstructionToken] = true;
+                    reconstructionPlacementOrder.push_back(targetSlot);
+                    recordEvent(EventType::INSERT, reconstructionSlots[(size_t)targetSlot]);
+                    if (reconstructionPlacementOrder.size() == reconstructionSlots.size()) {
+                        reconstructionComplete = true;
+                        recordEvent(EventType::ANSWER);
+                        stat = "Blueprint reconstructed from the traversal pair."; statC = OK_C;
+                    } else {
+                        stat = "Correct room. Place the remaining traversal tokens."; statC = OK_C;
+                    }
+                } else if (!alarmFailed) {
+                    stat = "That token does not belong in this room. Try another slot."; statC = ERR_C;
+                }
+                draggedReconstructionToken = -1;
+            }
+        }
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && inCanvas && !hoveredNode && draggedReconstructionToken < 0) panning = true;
         if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) panning = false;
         if (panning && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
             cameraPan.x += m.x - previousMouse.x;
@@ -1509,9 +1863,10 @@ int main() {
         auto drawBtn = [&](Rectangle r, const std::string& t) {
             bool h = CheckCollisionPointRec(m, r);
             bool p = h && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
-            DrawRectangleRec(r, p ? GRAY : (h ? LIGHTGRAY : RAYWHITE));
-            DrawRectangleLinesEx(r, 1.0f, DARKGRAY);
-            DrawText(t.c_str(), (int)r.x + (int)(r.width - MeasureText(t.c_str(), 16))/2, (int)r.y + 7, 16, DARKGRAY);
+            Theme::drawChamferedPanel(r, p ? Theme::green() : (h ? Theme::border() : Theme::card()),
+                                      h ? Theme::cyan() : Theme::border());
+            DrawText(t.c_str(), (int)r.x + (int)(r.width - MeasureText(t.c_str(), 16))/2,
+                     (int)r.y + 7, 16, p ? Theme::background() : Theme::text());
             return p;
         };
 
@@ -1529,8 +1884,8 @@ int main() {
         Rectangle nActBt  = { x, y, 80, 30 }; x += 90;
         Rectangle pLvlBt  = { x, y, 80, 30 }; x += 90;
         Rectangle nLvlBt  = { x, y, 80, 30 };
-        Rectangle rootAnswerRect = { 520, (float)row2Y, 60, 30 };
         Rectangle measureAnswerRect = { 100, (float)row2Y, 60, 30 };
+        Rectangle lcaAnswerRect = { 520, (float)row2Y, 60, 30 };
 
         // ---- Input handling ----
         if (!alarmFailed && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && isGuidedLevel() && !CheckCollisionPointRec(m,timelineRect) &&
@@ -1550,6 +1905,17 @@ int main() {
                             statC = OK_C;
                         } else {
                             stat = "That room is not the requested order statistic."; statC = ERR_C;
+                        }
+                    } else if (isHeightDiameterLevel()) {
+                        if (heightDiameterStep >= (int)heightNodeOrder.size()) {
+                            stat = "Room heights are complete. Enter the diameter now."; statC = OK_C;
+                        } else if (std::find(heightVisited.begin(), heightVisited.end(), entry.first) != heightVisited.end()) {
+                            stat = "This room's height is already recorded."; statC = OK_C;
+                        } else if (entry.first != heightNodeOrder[heightVisited.size()]) {
+                            stat = "Work bottom-up: select the next room in postorder."; statC = ERR_C;
+                        } else {
+                            heightSelectedNodeId = entry.first;
+                            stat = "Selected room. Enter its height in edges, then check."; statC = OK_C;
                         }
                     } else if (isBalanceLevel()) {
                         if (std::find(unbalancedTargets.begin(), unbalancedTargets.end(), entry.first) ==
@@ -1602,6 +1968,19 @@ int main() {
                     } else if (isLcaLevel()) {
                         if (lcaComplete) {
                             stat = "LCA already found. Reset to try again."; statC = OK_C;
+                        } else if (lcaPathPhase) {
+                            if (lcaPathVisited.size() < lcaPathExpected.size() &&
+                                entry.first == lcaPathExpected[lcaPathVisited.size()]) {
+                                lcaPathVisited.push_back(entry.first);
+                                stat = lcaPathVisited.size() == lcaPathExpected.size()
+                                    ? "Path traced. Enter its length in edges."
+                                    : "Correct room on the path. Continue tracing.";
+                                statC = OK_C;
+                            } else if (lcaPathVisited.size() == lcaPathExpected.size()) {
+                                stat = "Path already traced. Enter its length in edges."; statC = OK_C;
+                            } else {
+                                stat = "That room is not next on the LCA path."; statC = ERR_C;
+                            }
                         } else if (lcaSelected.size() < 2) {
                             lcaSelected.push_back(entry.first);
                             stat = lcaSelected.size() == 1 ? "First room selected. Choose a second room."
@@ -1612,8 +1991,23 @@ int main() {
                             }
                             statC = OK_C;
                         } else if (entry.first == lcaExpectedId) {
-                            lcaComplete = true;
-                            stat = "Correct meeting room. LCA challenge complete."; statC = OK_C;
+                            std::vector<int> pathA = tree.pathTo(lcaSelected[0]);
+                            std::vector<int> pathB = tree.pathTo(lcaSelected[1]);
+                            size_t common = 0;
+                            while (common < pathA.size() && common < pathB.size() &&
+                                   pathA[common] == pathB[common]) ++common;
+                            if (common == 0) {
+                                stat = "Could not form the route. Reset and select rooms again."; statC = ERR_C;
+                            } else {
+                                size_t lcaIndex = common - 1;
+                                for (int i = (int)pathA.size() - 1; i >= (int)lcaIndex; --i)
+                                    lcaPathExpected.push_back(pathA[(size_t)i]);
+                                for (size_t i = lcaIndex + 1; i < pathB.size(); ++i)
+                                    lcaPathExpected.push_back(pathB[i]);
+                                lcaPathPhase = true;
+                                stat = "Correct LCA. Trace the path from the first room through the LCA to the second.";
+                                statC = OK_C;
+                            }
                         } else {
                             stat = "That is not the lowest common ancestor. Try again."; statC = ERR_C;
                         }
@@ -1656,24 +2050,28 @@ int main() {
             else if (CheckCollisionPointRec(m, dR)) active = 1;
         }
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && isReconstructionLevel() &&
-            CheckCollisionPointRec(m, rootAnswerRect)) active = 0;
+            CheckCollisionPointRec(m, {30, (float)row2Y, 710, 30})) active = 0;
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && isHeightDiameterLevel() &&
             CheckCollisionPointRec(m, measureAnswerRect)) active = 0;
-        if (IsKeyPressed(KEY_TAB) && !isGuidedLevel() && !isHeapLevel()) active = 1 - active;
+        bool acceptsGuidedAnswer = isHeightDiameterLevel() ||
+            (isLcaLevel() && lcaPathPhase && lcaPathVisited.size() == lcaPathExpected.size());
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && isLcaLevel() && acceptsGuidedAnswer &&
+            CheckCollisionPointRec(m, lcaAnswerRect)) active = 0;
+        if (IsKeyPressed(KEY_TAB) && (!isGuidedLevel() || acceptsGuidedAnswer) && !isHeapLevel()) active = 1 - active;
 
-        int k = (isGuidedLevel() || isHeapLevel()) ? 0 : GetCharPressed();
+        int k = ((isGuidedLevel() && !acceptsGuidedAnswer) || isHeapLevel()) ? 0 : GetCharPressed();
         while (k > 0) {
             if (active == 0 && iL < 5 && k >= '0' && k <= '9') { insB[iL++] = (char)k; insB[iL] = '\0'; }
             else if (active == 1 && dL < 5 && k >= '0' && k <= '9') { delB[dL++] = (char)k; delB[dL] = '\0'; }
             k = GetCharPressed();
         }
-        if (!isGuidedLevel() && !isHeapLevel() && IsKeyPressed(KEY_BACKSPACE)) {
+        if ((!isGuidedLevel() || acceptsGuidedAnswer) && !isHeapLevel() && IsKeyPressed(KEY_BACKSPACE)) {
             if (active == 0 && iL > 0) insB[--iL] = '\0';
             else if (active == 1 && dL > 0) delB[--dL] = '\0';
         }
         if (IsKeyPressed(KEY_ENTER) && !alarmFailed) {
-            if (isReconstructionLevel()) checkReconstructionRoot();
-            else if (isHeightDiameterLevel()) checkHeightDiameterAnswer();
+            if (isHeightDiameterLevel()) checkHeightDiameterAnswer();
+            else if (isLcaLevel()) checkLcaPathLength();
             else if (isHeapLevel()) doHeapAction();
             else if (!isGuidedLevel()) doOp(active == 0);
         }
@@ -1740,110 +2138,116 @@ int main() {
         }
 
         BeginDrawing();
-            ClearBackground(RAYWHITE);
+            Theme::drawBackground(WIN_W, WIN_H);
 
             // Title bar
-            DrawRectangle(0, 0, WIN_W, titleH, Color{0, 60, 130, 255});
+            DrawRectangle(0, 0, WIN_W, titleH, Theme::panel());
+            DrawRectangle(0, titleH - 2, WIN_W, 2, Theme::cyan());
             std::string titleText = "VAULT HEIST";
             if (levelsLoaded && !loader.acts.empty()) {
                 titleText += " - Act " + std::to_string(loader.acts[actIdx].act) + ": " + loader.acts[actIdx].title;
                 titleText += " | Level " + loader.acts[actIdx].levels[levelIdx].id + ": " + loader.acts[actIdx].levels[levelIdx].name;
             }
-            DrawText(titleText.c_str(), 20, 15, 20, RAYWHITE);
+            DrawText(titleText.c_str(), 20, 15, 20, Theme::text());
             std::string campaignText = "Complete: " + std::to_string(completedLevels.size()) +
                                        " / " + std::to_string(totalLevels);
-            DrawText(campaignText.c_str(), WIN_W - 160, 17, 16, RAYWHITE);
+            DrawText(campaignText.c_str(), WIN_W - 160, 17, 16, Theme::text());
 
             // Toolbar panel
-            DrawRectangle(0, titleH, WIN_W, panelBot - titleH, LIGHTGRAY);
+            DrawRectangle(0, titleH, WIN_W, panelBot - titleH, Theme::panel());
 
             // Row 1: Patrol instructions or Insert / Delete + Level Nav
             if (isReconstructionLevel()) {
-                std::string clue = "Preorder: " + valuesToText(preorderClue);
-                DrawText(clue.c_str(), 30, (int)y + 7, 18, DARKGRAY);
+                std::vector<int> traversal = preorderClue;
+                if (reconstructionUsePostorder) {
+                    traversal.clear();
+                    collectPostorderKeys(tree.getRoot(), traversal);
+                }
+                std::string clue = std::string(reconstructionUsePostorder ? "Postorder: " : "Preorder: ") + valuesToText(traversal);
+                DrawText(clue.c_str(), 30, (int)y + 7, 18, Theme::muted());
             } else if (isHeightDiameterLevel()) {
-                DrawText("Measure the visible tree: height and diameter (edges).",
-                         30, (int)y + 7, 18, DARKGRAY);
+                DrawText("Postorder room heights:",
+                         30, (int)y + 7, 18, Theme::muted());
             } else if (isLcaLevel()) {
                 DrawText("Select two rooms, then find their LCA.",
-                         30, (int)y + 7, 18, DARKGRAY);
+                         30, (int)y + 7, 18, Theme::muted());
             } else if (isRangeLevel()) {
                 DrawText(("Range Raid: click keys from " + std::to_string(rangeLow) + " to " +
                           std::to_string(rangeHigh) + " in order").c_str(),
-                         30, (int)y + 7, 18, DARKGRAY);
+                         30, (int)y + 7, 18, Theme::muted());
             } else if (isBalanceLevel()) {
                 DrawText("Click rooms whose balance factor is outside -1, 0, 1.",
-                         30, (int)y + 7, 18, DARKGRAY);
+                         30, (int)y + 7, 18, Theme::muted());
             } else if (isSingleRotateLevel()) {
                 const char* prompt = singleRotationCase == "LL"
                     ? "LL imbalance at room 30. Apply a right rotation."
                     : "RR imbalance at room 70. Apply a left rotation.";
                 DrawText(prompt,
-                         30, (int)y + 7, 18, DARKGRAY);
+                         30, (int)y + 7, 18, Theme::muted());
             } else if (isDoubleRotateLevel()) {
                 const char* prompt = doubleRotationCase == "LR"
                     ? "LR case: rotate left at 20, then right at 50."
                     : "RL case: rotate right at 70, then left at 50.";
                 DrawText(prompt,
-                         30, (int)y + 7, 18, DARKGRAY);
+                         30, (int)y + 7, 18, Theme::muted());
             } else if (isInsertPredictLevel()) {
                 DrawText("Insert 10 into this tree. Predict the rotation case.",
-                         30, (int)y + 7, 18, DARKGRAY);
+                         30, (int)y + 7, 18, Theme::muted());
             } else if (isHeapLevel()) {
                 const std::string& levelId = loader.acts[actIdx].levels[levelIdx].id;
                 const char* prompt = levelId == "4.1" ? "Build a Max Heap from the array."
                                    : levelId == "4.2" ? "Repair this array with bottom-up heapify."
                                    : levelId == "4.3" ? "Extract the maximum values one at a time."
                                    : "Sort the heap one extraction step at a time.";
-                DrawText(prompt, 30, (int)y + 7, 18, DARKGRAY);
+                DrawText(prompt, 30, (int)y + 7, 18, Theme::muted());
             } else if (isOrderStatisticLevel()) {
                 DrawText(("Select the " + std::to_string(orderStatisticK) + "th smallest key").c_str(),
-                         30, (int)y + 7, 18, DARKGRAY);
+                         30, (int)y + 7, 18, Theme::muted());
             } else if (isDegenerationLevel()) {
                 DrawText(("Degeneration: find " + std::to_string(searchTarget) + " in the right-leaning chain").c_str(),
-                         30, (int)y + 7, 18, DARKGRAY);
+                         30, (int)y + 7, 18, Theme::muted());
             } else if (isMirrorLevel()) {
                 DrawText("Mirror every room that has a branch by clicking it.",
-                         30, (int)y + 7, 18, DARKGRAY);
+                         30, (int)y + 7, 18, Theme::muted());
             } else if (isPatrolLevel()) {
-                DrawText("Preorder: click Root, Left, Right", 30, (int)y + 7, 18, DARKGRAY);
+                DrawText("Preorder: click Root, Left, Right", 30, (int)y + 7, 18, Theme::muted());
             } else if (isSearchLevel()) {
                 DrawText(("BST search: find " + std::to_string(searchTarget) + " by comparing each room").c_str(),
-                         30, (int)y + 7, 18, DARKGRAY);
+                         30, (int)y + 7, 18, Theme::muted());
             } else if (isInsertLevel()) {
-                DrawText("Insert:", (int)insLabelX, (int)y + 7, 18, DARKGRAY);
-                DrawRectangleRec(iR, RAYWHITE);
-                DrawRectangleLinesEx(iR, active == 0 ? 2.0f : 1.0f, active == 0 ? BLUE : GRAY);
-                DrawText(insB, (int)iR.x + 5, (int)iR.y + 7, 18, BLACK);
+                DrawText("Insert:", (int)insLabelX, (int)y + 7, 18, Theme::muted());
+                DrawRectangleRec(iR, Theme::card());
+                DrawRectangleLinesEx(iR, active == 0 ? 2.0f : 1.0f, active == 0 ? Theme::cyan() : Theme::border());
+                DrawText(insB, (int)iR.x + 5, (int)iR.y + 7, 18, Theme::text());
                 if (active == 0 && ((int)(GetTime() * 2)) % 2 == 0)
-                    DrawText("|", (int)iR.x + 7 + MeasureText(insB, 18), (int)iR.y + 7, 18, BLACK);
+                    DrawText("|", (int)iR.x + 7 + MeasureText(insB, 18), (int)iR.y + 7, 18, Theme::text());
                 if (drawBtn(iBt, "Insert")) doOp(true);
                 DrawText(("Target: " + std::to_string(insertTarget)).c_str(),
-                         (int)delLabelX, (int)y + 7, 18, DARKGRAY);
+                         (int)delLabelX, (int)y + 7, 18, Theme::muted());
             } else if (isDeleteLevel()) {
                 DrawText(("Target " + std::to_string(deleteTarget) + ":").c_str(),
-                         (int)delLabelX, (int)y + 7, 18, DARKGRAY);
-                DrawRectangleRec(dR, RAYWHITE);
-                DrawRectangleLinesEx(dR, active == 1 ? 2.0f : 1.0f, active == 1 ? BLUE : GRAY);
-                DrawText(delB, (int)dR.x + 5, (int)dR.y + 7, 18, BLACK);
+                         (int)delLabelX, (int)y + 7, 18, Theme::muted());
+                DrawRectangleRec(dR, Theme::card());
+                DrawRectangleLinesEx(dR, active == 1 ? 2.0f : 1.0f, active == 1 ? Theme::cyan() : Theme::border());
+                DrawText(delB, (int)dR.x + 5, (int)dR.y + 7, 18, Theme::text());
                 if (active == 1 && ((int)(GetTime() * 2)) % 2 == 0)
-                    DrawText("|", (int)dR.x + 7 + MeasureText(delB, 18), (int)dR.y + 7, 18, BLACK);
+                    DrawText("|", (int)dR.x + 7 + MeasureText(delB, 18), (int)dR.y + 7, 18, Theme::text());
                 if (drawBtn(dBt, "Delete")) doOp(false);
             } else {
-            DrawText("Insert:", (int)insLabelX, (int)y + 7, 18, DARKGRAY);
-            DrawRectangleRec(iR, RAYWHITE);
-            DrawRectangleLinesEx(iR, active == 0 ? 2.0f : 1.0f, active == 0 ? BLUE : GRAY);
-            DrawText(insB, (int)iR.x + 5, (int)iR.y + 7, 18, BLACK);
+            DrawText("Insert:", (int)insLabelX, (int)y + 7, 18, Theme::muted());
+            DrawRectangleRec(iR, Theme::card());
+            DrawRectangleLinesEx(iR, active == 0 ? 2.0f : 1.0f, active == 0 ? Theme::cyan() : Theme::border());
+            DrawText(insB, (int)iR.x + 5, (int)iR.y + 7, 18, Theme::text());
             if (active == 0 && ((int)(GetTime() * 2)) % 2 == 0)
-                DrawText("|", (int)iR.x + 7 + MeasureText(insB, 18), (int)iR.y + 7, 18, BLACK);
+                DrawText("|", (int)iR.x + 7 + MeasureText(insB, 18), (int)iR.y + 7, 18, Theme::text());
             if (drawBtn(iBt, "Insert")) doOp(true);
 
-            DrawText("Delete:", (int)delLabelX, (int)y + 7, 18, DARKGRAY);
-            DrawRectangleRec(dR, RAYWHITE);
-            DrawRectangleLinesEx(dR, active == 1 ? 2.0f : 1.0f, active == 1 ? BLUE : GRAY);
-            DrawText(delB, (int)dR.x + 5, (int)dR.y + 7, 18, BLACK);
+            DrawText("Delete:", (int)delLabelX, (int)y + 7, 18, Theme::muted());
+            DrawRectangleRec(dR, Theme::card());
+            DrawRectangleLinesEx(dR, active == 1 ? 2.0f : 1.0f, active == 1 ? Theme::cyan() : Theme::border());
+            DrawText(delB, (int)dR.x + 5, (int)dR.y + 7, 18, Theme::text());
             if (active == 1 && ((int)(GetTime() * 2)) % 2 == 0)
-                DrawText("|", (int)dR.x + 7 + MeasureText(delB, 18), (int)dR.y + 7, 18, BLACK);
+                DrawText("|", (int)dR.x + 7 + MeasureText(delB, 18), (int)dR.y + 7, 18, Theme::text());
             if (drawBtn(dBt, "Delete")) doOp(false);
             }
 
@@ -1874,7 +2278,7 @@ int main() {
                 if (drawBtn({ 170, (float)row2Y, 70, 30 }, "Reset")) doReset();
                 if (drawBtn({ 250, (float)row2Y, 75, 30 }, "Undo [Z]")) doUndo();
                 DrawText(heapTaskComplete ? "Complete" : "Use the action to continue",
-                         340, row2Y + 7, 16, DARKGRAY);
+                         340, row2Y + 7, 16, Theme::muted());
             } else if (isInsertPredictLevel()) {
                 if (drawBtn({ 30, (float)row2Y, 80, 30 }, "Undo [Z]")) doUndo();
                 if (drawBtn({ 122, (float)row2Y, 55, 30 }, "LL")) predictInsertion("LL");
@@ -1896,7 +2300,7 @@ int main() {
                 if (drawBtn({ 424, (float)row2Y, 48, 30 }, "RL") && doubleRotationCase != "RL") {
                     doubleRotationCase = "RL"; resetToLevel(); undoStack.clear(); relayout();
                 }
-                DrawText((std::to_string(doubleRotationStep) + " / 2").c_str(), 486, row2Y + 7, 16, DARKGRAY);
+                DrawText((std::to_string(doubleRotationStep) + " / 2").c_str(), 486, row2Y + 7, 16, Theme::muted());
             } else if (isSingleRotateLevel()) {
                 if (drawBtn({ 30, (float)row2Y, 80, 30 }, "Undo [Z]")) doUndo();
                 if (drawBtn({ 122, (float)row2Y, 150, 30 },
@@ -1909,33 +2313,68 @@ int main() {
                     singleRotationCase = "RR"; resetToLevel(); undoStack.clear(); relayout();
                 }
                 DrawText(singleRotationComplete ? "Balanced" : singleRotationCase.c_str(),
-                         486, row2Y + 7, 16, DARKGRAY);
+                         486, row2Y + 7, 16, Theme::muted());
             } else if (isHeightDiameterLevel()) {
-                DrawText(heightDiameterStep == 0 ? "Height:" : "Diameter:",
-                         30, row2Y + 7, 18, DARKGRAY);
-                DrawRectangleRec(measureAnswerRect, RAYWHITE);
+                bool askingRoomHeight = heightDiameterStep < (int)heightNodeOrder.size();
+                std::string fieldLabel = askingRoomHeight
+                    ? (heightSelectedNodeId < 0 ? "Select room:" : "Height:")
+                    : "Diameter:";
+                DrawText(fieldLabel.c_str(),
+                         30, row2Y + 7, 18, Theme::muted());
+                DrawRectangleRec(measureAnswerRect, Theme::card());
                 DrawRectangleLinesEx(measureAnswerRect, active == 0 ? 2.0f : 1.0f,
                                      active == 0 ? BLUE : GRAY);
-                DrawText(insB, (int)measureAnswerRect.x + 5, (int)measureAnswerRect.y + 7, 18, BLACK);
+                DrawText(insB, (int)measureAnswerRect.x + 5, (int)measureAnswerRect.y + 7, 18, Theme::text());
                 if (active == 0 && ((int)(GetTime() * 2)) % 2 == 0)
                     DrawText("|", (int)measureAnswerRect.x + 7 + MeasureText(insB, 18),
-                             (int)measureAnswerRect.y + 7, 18, BLACK);
+                             (int)measureAnswerRect.y + 7, 18, Theme::text());
                 if (drawBtn({ 170, (float)row2Y, 70, 30 }, "Check")) checkHeightDiameterAnswer();
                 if (drawBtn({ 250, (float)row2Y, 70, 30 }, "Reset")) doReset();
-                DrawText((std::to_string(heightDiameterStep) + " / 2").c_str(), 340, row2Y + 7, 16, DARKGRAY);
+                std::string heightProgress = askingRoomHeight
+                    ? std::to_string(heightVisited.size()) + " / " + std::to_string(heightNodeOrder.size()) + " rooms"
+                    : (heightDiameterStep > (int)heightNodeOrder.size() ? "Complete" : "Enter diameter");
+                DrawText(heightProgress.c_str(), 340, row2Y + 7, 16, Theme::muted());
             } else if (isReconstructionLevel()) {
                 std::string clue = "Inorder: " + valuesToText(inorderClue);
-                DrawText(clue.c_str(), 30, row2Y + 7, 18, DARKGRAY);
-                DrawText("Root:", 460, row2Y + 7, 18, DARKGRAY);
-                DrawRectangleRec(rootAnswerRect, RAYWHITE);
-                DrawRectangleLinesEx(rootAnswerRect, active == 0 ? 2.0f : 1.0f,
-                                     active == 0 ? BLUE : GRAY);
-                DrawText(insB, (int)rootAnswerRect.x + 5, (int)rootAnswerRect.y + 7, 18, BLACK);
-                if (active == 0 && ((int)(GetTime() * 2)) % 2 == 0)
-                    DrawText("|", (int)rootAnswerRect.x + 7 + MeasureText(insB, 18),
-                             (int)rootAnswerRect.y + 7, 18, BLACK);
-                if (drawBtn({ 590, (float)row2Y, 70, 30 }, "Check")) checkReconstructionRoot();
-                if (drawBtn({ 670, (float)row2Y, 70, 30 }, "Reset")) doReset();
+                DrawText(clue.c_str(), 30, row2Y + 7, 18, Theme::muted());
+                if (drawBtn({ 330, (float)row2Y, 120, 30 }, reconstructionUsePostorder ? "Use Preorder" : "Use Postorder")) {
+                    reconstructionUsePostorder = !reconstructionUsePostorder;
+                    reconstructionComplete = false;
+                    std::fill(reconstructionSlotFilled.begin(), reconstructionSlotFilled.end(), false);
+                    std::fill(reconstructionTokenUsed.begin(), reconstructionTokenUsed.end(), false);
+                    reconstructionPlacementOrder.clear();
+                    reconstructionTokens.clear();
+                    if (reconstructionUsePostorder) collectPostorderKeys(tree.getRoot(), reconstructionTokens);
+                    else reconstructionTokens = preorderClue;
+                    reconstructionTokenUsed.assign(reconstructionTokens.size(), false);
+                    draggedReconstructionToken = -1;
+                    stat = reconstructionUsePostorder ? "Postorder + inorder reconstruction selected." : "Preorder + inorder reconstruction selected.";
+                    statC = OK_C;
+                }
+                if (drawBtn({ 460, (float)row2Y, 80, 30 }, "Undo")) doUndo();
+                if (drawBtn({ 550, (float)row2Y, 80, 30 }, "Reset")) doReset();
+            } else if (isLcaLevel()) {
+                DrawText(lcaPathPhase && lcaPathVisited.size() == lcaPathExpected.size()
+                             ? "Path length:"
+                             : (lcaPathPhase ? "Trace path:" : "Rooms / LCA:"),
+                         30, row2Y + 7, 18, Theme::muted());
+                if (lcaPathPhase && lcaPathVisited.size() == lcaPathExpected.size()) {
+                    DrawRectangleRec(lcaAnswerRect, Theme::card());
+                    DrawRectangleLinesEx(lcaAnswerRect, active == 0 ? 2.0f : 1.0f,
+                                         active == 0 ? BLUE : GRAY);
+                    DrawText(insB, (int)lcaAnswerRect.x + 5, (int)lcaAnswerRect.y + 7, 18, Theme::text());
+                    if (active == 0 && ((int)(GetTime() * 2)) % 2 == 0)
+                        DrawText("|", (int)lcaAnswerRect.x + 7 + MeasureText(insB, 18),
+                                 (int)lcaAnswerRect.y + 7, 18, Theme::text());
+                    if (drawBtn({ 590, (float)row2Y, 70, 30 }, "Check")) checkLcaPathLength();
+                } else {
+                    std::string progress = lcaPathPhase
+                        ? std::to_string(lcaPathVisited.size()) + " / " + std::to_string(lcaPathExpected.size()) + " rooms"
+                        : std::to_string(lcaSelected.size()) + " / 2 selected";
+                    DrawText(progress.c_str(), 340, row2Y + 7, 16, Theme::muted());
+                }
+                if (drawBtn({ 670, (float)row2Y, 70, 30 }, "Undo [Z]")) doUndo();
+                if (drawBtn({ 750, (float)row2Y, 70, 30 }, "Reset")) doReset();
             } else {
                 if (drawBtn({ bx, (float)row2Y, 80, 30 }, "Undo [Z]")) doUndo();
                 bx += 80 + 12;
@@ -1959,7 +2398,7 @@ int main() {
                                             : "Steps: " + std::to_string(isPatrolLevel() ? patrolVisited.size() : searchVisited.size()) +
                                                   " / " + std::to_string(isPatrolLevel() ? patrolOrder.size() : searchPath.size()))))))
                               : "Undo steps: " + std::to_string(undoStack.size())).c_str(),
-                         (int)bx, row2Y + 7, 16, DARKGRAY);
+                         (int)bx, row2Y + 7, 16, Theme::muted());
             }
             if (statC.r == ERR_C.r && statC.g == ERR_C.g &&
                 statC.b == ERR_C.b && statC.a == ERR_C.a) {
@@ -1981,14 +2420,14 @@ int main() {
                     : (bestStars.count(currentLevelId) ? bestStars[currentLevelId] : 0);
                 DrawText(("Alarm: " + std::to_string(alarmSteps) + "/" + std::to_string(alarmCapacity) +
                           "  Score: " + std::to_string(shownScore) + "  Stars: " +
-                          std::to_string(shownStars) + "/3").c_str(), WIN_W - 400, row2Y + 7, 16, DARKGRAY);
+                          std::to_string(shownStars) + "/3").c_str(), WIN_W - 400, row2Y + 7, 16, Theme::muted());
             }
 
             // Row 3: instructions, Row 4: status
             std::string instructions = "Instructions: Click box or press [TAB] to switch. [ENTER] executes. [Z] Undos.";
             if (isPatrolLevel()) instructions = "Click rooms in root-left-right order. [Z] undoes. Reset restarts the patrol.";
             else if (isSearchLevel()) instructions = "Click each room along the BST search path. [Z] undoes. Reset restarts the search.";
-            else if (isLcaLevel()) instructions = "Choose any two rooms, then find the deepest node shared by both root paths.";
+            else if (isLcaLevel()) instructions = "Choose two rooms, identify their LCA, trace the room path between them, then enter its edge length.";
             else if (isMirrorLevel()) instructions = "Each click swaps a room's children. Undo reverses the last swap.";
             else if (isRangeLevel()) instructions = "Click every key in the range from smallest to largest.";
             else if (isDegenerationLevel()) instructions = "Follow each comparison to the end of this unbalanced BST.";
@@ -1998,33 +2437,43 @@ int main() {
             else if (isInsertPredictLevel()) instructions = "Choose LL, RR, LR, or RL. Correct predictions trigger an automatic repair.";
             else if (isOrderStatisticLevel()) instructions = "The k-th smallest key is at position k in the sorted order.";
             else if (isHeapLevel()) instructions = "The array and complete-tree view show the same heap. Click the action button to advance.";
-            else if (isHeightDiameterLevel()) instructions = "Height is root to deepest leaf in edges; diameter is the longest path in edges.";
-            else if (isReconstructionLevel()) instructions = "Use preorder and inorder to identify the root, then check your answer.";
+            else if (isHeightDiameterLevel()) instructions = "For each room, enter the height of its subtree in edges, then enter the tree diameter.";
+            else if (isReconstructionLevel()) instructions = "Drag each traversal value into its matching empty room. Use both traversal pairs.";
             else if (isInsertLevel()) instructions = "Type the target key and press [ENTER] or click Insert. [Z] undoes.";
             else if (isDeleteLevel()) instructions = "Delete the node with two children to watch the inorder successor take its place.";
             instructions += " [H] Hint. Wheel zooms; drag empty canvas to pan.";
             DrawText(instructions.c_str(), 30, instrY, 16, GRAY);
-            DrawText(stat.c_str(), 30, statusY, 18, statC);
+            Color statusColor = statC.r == ERR_C.r && statC.g == ERR_C.g && statC.b == ERR_C.b
+                ? Theme::red() : statC.r == OK_C.r && statC.g == OK_C.g && statC.b == OK_C.b
+                ? Theme::green() : Theme::muted();
+            DrawText(stat.c_str(), 30, statusY, 18, statusColor);
 
             // Canvas
             BeginScissorMode(canvasX, canvasY, canvasW, canvasH);
-                DrawRectangleRec(timelineRect, LIGHTGRAY);
-                DrawRectangleLinesEx(timelineRect,1,DARKGRAY);
+                DrawRectangleRec(timelineRect, Theme::border());
+                DrawRectangleLinesEx(timelineRect,1,Theme::muted());
                 if(eventLog.size()>1&&animation.currentIndex()>=0){
                     float progress=(float)animation.currentIndex()/(float)(eventLog.size()-1);
                     DrawRectangleRec({timelineRect.x,timelineRect.y,timelineRect.width*progress,timelineRect.height},SKYBLUE);
                     DrawCircleV({timelineRect.x+timelineRect.width*progress,timelineRect.y+timelineRect.height/2},5,ORANGE);
                 }
                 std::string eventLabel=eventLog.empty()?"Event log: no actions yet":"Event "+std::to_string(animation.currentIndex()+1)+" / "+std::to_string(eventLog.size())+"   [Space] play/pause [Left/Right] step";
-                DrawText(eventLabel.c_str(),(int)timelineRect.x,(int)timelineRect.y+18,13,DARKGRAY);
+                DrawText(eventLabel.c_str(), canvasX + 10, (int)timelineRect.y + 18, 13, Theme::text());
+                if (animation.currentIndex() >= 0 && animation.currentIndex() < (int)eventLog.size()) {
+                    const std::string& detail = eventLog.at((size_t)animation.currentIndex()).detail;
+                    DrawText(detail.c_str(), canvasX + 10, (int)timelineRect.y + 34, 13, Theme::cyan());
+                }
                 if (isHeapLevel()) {
                     std::string arrayText = heapArrayText();
-                    DrawText(arrayText.c_str(), canvasX + 15, canvasY + 10, 18, DARKGRAY);
+                    DrawText(arrayText.c_str(), canvasX + 15, canvasY + 10, 18, Theme::muted());
                 }
                 std::unordered_map<int, Color> highlights;
                 if (isGuidedLevel()) {
                     if (isOrderStatisticLevel()) {
                         if (orderStatisticComplete) highlights[orderStatisticTargetId] = BLUE;
+                    } else if (isHeightDiameterLevel()) {
+                        for (int id : heightVisited) highlights[id] = BLUE;
+                        if (heightSelectedNodeId >= 0) highlights[heightSelectedNodeId] = GOLD;
                     } else if (isBalanceLevel()) {
                         for (int id : unbalancedSelected) highlights[id] = BLUE;
                     } else if (isRangeLevel()) {
@@ -2034,7 +2483,8 @@ int main() {
                     } else if (isLcaLevel()) {
                         if (!lcaSelected.empty()) highlights[lcaSelected[0]] = BLUE;
                         if (lcaSelected.size() > 1) highlights[lcaSelected[1]] = GOLD;
-                        if (lcaComplete) highlights[lcaExpectedId] = GREEN;
+                        for (int id : lcaPathVisited) highlights[id] = BLUE;
+                        if (lcaPathPhase || lcaComplete) highlights[lcaExpectedId] = GREEN;
                     } else {
                         const std::vector<int>& visited = isPatrolLevel() ? patrolVisited : searchVisited;
                         for (int id : visited) highlights[id] = BLUE;
@@ -2085,8 +2535,30 @@ int main() {
                         }
                     }
                 } else {
-                    DrawText("Reconstruct the root from the two traversal clues above.",
-                             canvasX + 35, canvasY + 30, 20, DARKGRAY);
+                    renderer.drawTreeSlots(reconstructionTemplate.getRoot(), reconstructionLayout,
+                                           canvas, cameraZoom, cameraPan);
+                    for (size_t i = 0; i < reconstructionSlots.size(); ++i) {
+                        if (!reconstructionSlotFilled[i]) continue;
+                        NodePosition slot = reconstructionLayout.positions[reconstructionSlots[i]];
+                        Vector2 center = toScreen(slot);
+                        std::string value = std::to_string(reconstructionSlots[i]);
+                        DrawText(value.c_str(), (int)center.x - MeasureText(value.c_str(), 20) / 2,
+                                 (int)center.y - 10, 20, Theme::text());
+                    }
+                    for (size_t i = 0; i < reconstructionTokens.size(); ++i) {
+                        if (reconstructionTokenUsed[i] || (int)i == draggedReconstructionToken) continue;
+                        Rectangle chip = reconstructionTokenRect((int)i);
+                        Theme::drawChamferedPanel(chip, Theme::card(), Theme::cyan());
+                        std::string value = std::to_string(reconstructionTokens[i]);
+                        DrawText(value.c_str(), (int)(chip.x + (chip.width - MeasureText(value.c_str(), 18)) / 2),
+                                 (int)chip.y + 6, 18, Theme::text());
+                    }
+                    if (draggedReconstructionToken >= 0) {
+                        std::string value = std::to_string(reconstructionTokens[(size_t)draggedReconstructionToken]);
+                        DrawRectangle((int)m.x - 34, (int)m.y - 15, 68, 30, Color{0, 240, 255, 100});
+                        DrawText(value.c_str(), (int)m.x - MeasureText(value.c_str(), 18) / 2,
+                                 (int)m.y - 9, 18, Theme::text());
+                    }
                 }
             EndScissorMode();
             if (isCurrentLevelComplete() || alarmFailed) {
@@ -2098,19 +2570,19 @@ int main() {
                 const char* resultTitle = alarmFailed ? "ALARM TRIGGERED" : "LEVEL COMPLETE";
                 DrawText(resultTitle, panelX + 25, panelY + 20, 26, alarmFailed ? RED : GREEN);
                 if (alarmFailed) {
-                    DrawText("Reset the level to try again.", panelX + 25, panelY + 65, 18, RAYWHITE);
+                    DrawText("Reset the level to try again.", panelX + 25, panelY + 65, 18, Theme::text());
                 } else {
                     std::string stars = "Stars: " + std::string(starsEarned, '*') +
                                         std::string(3 - starsEarned, '-');
                     DrawText(stars.c_str(), panelX + 25, panelY + 61, 22, GOLD);
                     DrawText(("Alarm steps: " + std::to_string(alarmSteps) +
                               " / " + std::to_string(alarmCapacity)).c_str(),
-                             panelX + 25, panelY + 92, 17, RAYWHITE);
+                             panelX + 25, panelY + 92, 17, Theme::text());
                     DrawText(("Score: " + std::to_string(std::max(0, 1000 - 10 * alarmSteps - scorePenalties)) +
                               "    Optimal: " + std::to_string(optimalSteps())).c_str(),
-                             panelX + 25, panelY + 119, 17, RAYWHITE);
+                             panelX + 25, panelY + 119, 17, Theme::text());
                 }
-                DrawText("Use Reset to retry or Next Lvl to continue.", panelX + 25, panelY + 145, 15, LIGHTGRAY);
+                DrawText("Use Reset to retry or Next Lvl to continue.", panelX + 25, panelY + 145, 15, Theme::border());
             }
             if (hoveredNode) {
                 int nodeHeight = subtreeHeight(hoveredNode);
@@ -2122,13 +2594,18 @@ int main() {
                 int tipW = MeasureText(tip.c_str(), 15) + 14;
                 int tipX = std::min((int)m.x + 14, WIN_W - tipW - 8);
                 int tipY = std::min((int)m.y + 14, WIN_H - 34);
-                DrawRectangle(tipX, tipY, tipW, 26, Color{30, 30, 30, 235});
-                DrawText(tip.c_str(), tipX + 7, tipY + 5, 15, RAYWHITE);
+                Theme::drawChamferedPanel({(float)tipX, (float)tipY, (float)tipW, 26},
+                                          Theme::card(), Theme::cyan(), 5.0f);
+                DrawText(tip.c_str(), tipX + 7, tipY + 5, 15, Theme::text());
             }
-            DrawRectangleLines(canvasX, canvasY, canvasW, canvasH, LIGHTGRAY);
+            DrawRectangleLines(canvasX, canvasY, canvasW, canvasH, Theme::border());
         EndDrawing();
     }
     saveActiveState();
+    stopAlarmSound();
+    if (alarmSoundReady) UnloadSound(alarmSound);
+    if (IsAudioDeviceReady()) CloseAudioDevice();
     CloseWindow();
     return 0;
 }
+

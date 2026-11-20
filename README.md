@@ -45,21 +45,10 @@ C:\raylib\w64devkit\bin\g++.exe -std=c++17 -O2 -Wall -Wextra -Isrc -o benchmark.
 ## Controls
 
 - Click rooms to answer traversal, search, range, balance, LCA, and mirror challenges.
-- Type a number into the visible input box for root, height, diameter, insert, and delete questions. Press **Enter** or use the on-screen button.
+- In Level 1.2, drag each traversal token into its tree slot. Switch between preorder + inorder and postorder + inorder with the selector. Enter per-room heights and the final diameter in Level 1.3; trace the route and enter its edge count in Level 1.4. Other numeric prompts use the visible input box and **Enter** or the on-screen button.
 - Use the level's action buttons for AVL rotations and heap operations.
 - Press **Z** to undo the last tree, heap, or guided-level action. **Replay**, **Play/Pause**, the timeline, and the arrow keys step through recorded action states. **H** gives a hint and caps the level at two stars. Click **Reset** to restart a level. Use the mouse wheel to zoom, drag empty canvas to pan, and hover over a room to see its key, depth, height, and balance factor.
 - The title bar counts completed levels. The HUD shows alarm steps against the level capacity, score, and earned stars. Score follows the spec formula: 1000 − 10 × alarm steps − penalties, floored at 0. Completed level scores and stars are saved in `data/progress.txt`; the current level tree or heap is saved in `data/current_state.txt` using preorder null markers or the heap array.
-
-## Demo route
-
-Show one example from each act:
-
-1. **Act 1, Level 1.1:** click the rooms in preorder.
-2. **Act 2, Level 2.3:** delete the highlighted node and show the inorder-successor replacement.
-3. **Act 3, Level 3.3:** apply the left rotation, then the right rotation.
-4. **Act 4, Level 4.5:** advance Heap Sort one step at a time and show the sorted region.
-
-For a shorter demo, show Levels **1.1**, **2.1**, and **2.2**.
 
 ## Campaign
 
@@ -70,17 +59,17 @@ See [LEVELS_GUIDE.md](LEVELS_GUIDE.md) for instructions on adding levels and cha
 ## Other modes and event playback
 
 - **Endless** gives a timed stream of BST insert/delete operations with three lives and records local high scores.
-- **Sandbox** is a free-form BST and heap editor for demonstrating operations.
+- **Sandbox** supports Binary Tree, BST, AVL Tree, and Max Heap modes, with a randomize control for the selected structure.
 - **Leaderboard** shows the ten highest local Endless scores. **Settings** switches the theme and frame limit.
 - The campaign map gates levels using saved completion progress and opens a briefing and result screen for each level.
-- GUI actions publish structured events through the event bus. The event log keeps the tree state after each event; playback and the scrubber display those saved states. Undo is available for tree edits, rotations, heap actions, and guided challenge selections/answers.
+- GUI actions publish structured events through the event bus. The event log keeps the tree state and a readable action description for replay and scrubbing. Undo is available for tree edits, rotations, heap actions, and guided challenge selections/answers.
+- When the alarm meter reaches capacity, the game plays `assets/Alarm.mp3` once for that failure.
 
 ## Project evidence
 
 - [Project report (DOCX)](docs/Vault_Heist_Project_Report.docx)
 - [Unit test report](TEST_REPORT.md)
-- [Benchmark results and charts](docs/BENCHMARK_RESULTS.md)
-- [Sorting comparison chart](docs/sorting_comparison.svg)
+- [Level data guide](LEVELS_GUIDE.md)
 - [GUI screenshot index](docs/SCREENSHOTS.md)
-- [Viva preparation](docs/VIVA_PREP.md)
-- Raw benchmark output: `benchmark_results.csv`
+
+Level 1.2 supports both preorder + inorder and postorder + inorder reconstruction using draggable tokens. See docs/SCREENSHOTS.md for the current captures and their exact states, including the completed Level 4.4 sorted result.

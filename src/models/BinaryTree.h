@@ -36,6 +36,7 @@ struct Event {
     int pivotId;
     int traversalStep;
     bool isLeft;
+    string detail;
 };
 
 class BinaryTree {
